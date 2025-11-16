@@ -1,0 +1,1628 @@
+// Game Configuration
+const GAME_CONFIG = {
+    GRID_SIZE: 7,
+    INITIAL_BALANCE: 10.00,
+    GAME_COST: 1.00,
+    LINE_PAYOUT: 0.04, // 40 cents per line
+    TARGET_RTP: 0.97, // 97% return to player
+    MAX_MULTIPLIER: 10,
+    TURN_TIME_LIMIT: 30 // seconds
+};
+
+// Game State
+let gameState = {
+    grid: [],
+    balance: GAME_CONFIG.INITIAL_BALANCE,
+    currentMultiplier: 1,
+    linesCleared: 0,
+    selectedBlock: null,
+    blockOptions: [],
+    isGameOver: false,
+    autoPlay: false,
+    consecutiveClears: 0,
+    // Performance tracking for dynamic RTP
+    totalGamesPlayed: 0,
+    totalAmountWagered: 0,
+    totalAmountWon: 0,
+    recentPerformance: [], // Last 10 games performance
+    difficultyMultiplier: 1.0, // Increases as player performs too well
+    timeRemaining: 0,
+    timerInterval: null
+};
+
+function stopGameTimer() {
+    if (gameState.timerInterval) {
+        clearInterval(gameState.timerInterval);
+        gameState.timerInterval = null;
+    }
+}
+
+function startGameTimer() {
+    stopGameTimer();
+    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
+    updateUI();
+    
+    gameState.timerInterval = setInterval(() => {
+        if (gameState.isGameOver) {
+            stopGameTimer();
+            return;
+        }
+        
+        gameState.timeRemaining = Math.max(0, gameState.timeRemaining - 1);
+        updateUI();
+        
+        if (gameState.timeRemaining <= 0) {
+            stopGameTimer();
+            endGame();
+        }
+    }, 1000);
+}
+
+// Block Shapes - Core Tetris pieces plus simple blocks
+const BLOCK_SHAPES = {
+    single: [[1]],
+    double: [[1, 1]],
+    I_piece: [[1, 1, 1, 1]],
+    I_piece_vertical: [[1], [1], [1], [1]],
+    O_piece: [[1, 1], [1, 1]],
+    T_piece: [[0, 1, 0], [1, 1, 1]],
+    T_piece_rotated1: [[1, 0], [1, 1], [1, 0]],
+    T_piece_rotated2: [[1, 1, 1], [0, 1, 0]],
+    T_piece_rotated3: [[0, 1], [1, 1], [0, 1]],
+    L_piece: [[1, 0, 0], [1, 1, 1]],
+    L_piece_rotated1: [[1, 1], [1, 0], [1, 0]],
+    L_piece_rotated2: [[1, 1, 1], [0, 0, 1]],
+    L_piece_rotated3: [[0, 1], [0, 1], [1, 1]],
+    J_piece: [[0, 0, 1], [1, 1, 1]],
+    J_piece_rotated1: [[1, 0], [1, 0], [1, 1]],
+    J_piece_rotated2: [[1, 1, 1], [1, 0, 0]],
+    J_piece_rotated3: [[1, 1], [0, 1], [0, 1]],
+    S_piece: [[0, 1, 1], [1, 1, 0]],
+    S_piece_vertical: [[1, 0], [1, 1], [0, 1]],
+    Z_piece: [[1, 1, 0], [0, 1, 1]],
+    Z_piece_vertical: [[0, 1], [1, 1], [1, 0]]
+};
+
+// Block difficulty metrics (1-10 scale, higher = harder to place)
+const BLOCK_DIFFICULTY = {
+    single: 1,
+    double: 1,
+    I_piece: 3,
+    I_piece_vertical: 3,
+    O_piece: 3,
+    T_piece: 4,
+    T_piece_rotated1: 4,
+    T_piece_rotated2: 4,
+    T_piece_rotated3: 4,
+    L_piece: 4,
+    L_piece_rotated1: 4,
+    L_piece_rotated2: 4,
+    L_piece_rotated3: 4,
+    J_piece: 4,
+    J_piece_rotated1: 4,
+    J_piece_rotated2: 4,
+    J_piece_rotated3: 4,
+    S_piece: 4,
+    S_piece_vertical: 4,
+    Z_piece: 4,
+    Z_piece_vertical: 4
+};
+
+const MAX_BLOCK_DIFFICULTY = Math.max(...Object.values(BLOCK_DIFFICULTY));
+const DIFFICULTY_WEIGHT_SETTINGS = {
+    bonusPerPoint: 1.2,
+    multiplierRange: 0.5
+};
+
+function applyDifficultyWeight(baseWeight = 1, difficultyValue = 1) {
+    const sanitizedBase = Math.max(0, baseWeight);
+    const clampedDifficulty = Math.max(1, Math.min(difficultyValue, MAX_BLOCK_DIFFICULTY));
+    const bonus = clampedDifficulty * DIFFICULTY_WEIGHT_SETTINGS.bonusPerPoint;
+    const normalized = (clampedDifficulty - 1) / (MAX_BLOCK_DIFFICULTY - 1 || 1);
+    const multiplier = 1 + normalized * DIFFICULTY_WEIGHT_SETTINGS.multiplierRange;
+    return Math.max((sanitizedBase + bonus) * multiplier, 0.1);
+}
+
+// RTP Weights for different block types (higher weight = more likely to appear when RTP is low)
+const BLOCK_WEIGHTS = {
+    single: { base: 18, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
+    double: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double },
+    I_piece: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece },
+    I_piece_vertical: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece_vertical },
+    O_piece: { base: 11, rtp_factor: 0.7, difficulty: BLOCK_DIFFICULTY.O_piece },
+    T_piece: { base: 10, rtp_factor: 1.0, difficulty: BLOCK_DIFFICULTY.T_piece },
+    T_piece_rotated1: { base: 10, rtp_factor: 1.0, difficulty: BLOCK_DIFFICULTY.T_piece_rotated1 },
+    T_piece_rotated2: { base: 10, rtp_factor: 1.0, difficulty: BLOCK_DIFFICULTY.T_piece_rotated2 },
+    T_piece_rotated3: { base: 10, rtp_factor: 1.0, difficulty: BLOCK_DIFFICULTY.T_piece_rotated3 },
+    L_piece: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.L_piece },
+    L_piece_rotated1: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.L_piece_rotated1 },
+    L_piece_rotated2: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.L_piece_rotated2 },
+    L_piece_rotated3: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.L_piece_rotated3 },
+    J_piece: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.J_piece },
+    J_piece_rotated1: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.J_piece_rotated1 },
+    J_piece_rotated2: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.J_piece_rotated2 },
+    J_piece_rotated3: { base: 9, rtp_factor: 1.1, difficulty: BLOCK_DIFFICULTY.J_piece_rotated3 },
+    S_piece: { base: 8, rtp_factor: 1.3, difficulty: BLOCK_DIFFICULTY.S_piece },
+    S_piece_vertical: { base: 8, rtp_factor: 1.3, difficulty: BLOCK_DIFFICULTY.S_piece_vertical },
+    Z_piece: { base: 8, rtp_factor: 1.3, difficulty: BLOCK_DIFFICULTY.Z_piece },
+    Z_piece_vertical: { base: 8, rtp_factor: 1.3, difficulty: BLOCK_DIFFICULTY.Z_piece_vertical }
+};
+
+// Initialize the game
+function initGame() {
+    // Deduct the cost to play the first game
+    gameState.balance -= GAME_CONFIG.GAME_COST;
+    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
+    
+    createGrid();
+    generateBlockOptions();
+    
+    // Check if game is immediately over (very rare but possible)
+    if (isGameOver()) {
+        endGame();
+    } else {
+        startGameTimer();
+    }
+    
+    updateUI();
+    
+    // Add event listeners
+    document.addEventListener('keydown', handleKeyPress);
+}
+
+// Create the 8x8 grid
+function createGrid() {
+    gameState.grid = Array(GAME_CONFIG.GRID_SIZE).fill().map(() => 
+        Array(GAME_CONFIG.GRID_SIZE).fill(0)
+    );
+    
+    const gameBoard = document.getElementById('gameBoard');
+    gameBoard.innerHTML = '';
+    
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+            const cell = document.createElement('div');
+            cell.className = 'grid-cell';
+            cell.dataset.row = row;
+            cell.dataset.col = col;
+            
+            cell.addEventListener('click', () => handleCellClick(row, col));
+            cell.addEventListener('mouseenter', () => showBlockPreview(row, col));
+            cell.addEventListener('mouseleave', () => clearBlockPreview());
+            
+            gameBoard.appendChild(cell);
+        }
+    }
+}
+
+// Handle cell click for block placement
+function handleCellClick(row, col) {
+    if (!gameState.selectedBlock || gameState.isGameOver) return;
+    
+    if (canPlaceBlock(gameState.selectedBlock.shape, row, col)) {
+        placeBlock(gameState.selectedBlock.shape, row, col);
+        clearBlockPreview();
+        
+        // Check for completed lines
+        const clearedLines = checkAndClearLines();
+        if (clearedLines > 0) {
+            handleLineClear(clearedLines);
+        } else {
+            gameState.consecutiveClears = 0;
+            gameState.currentMultiplier = 1;
+        }
+        
+        // Remove used block and generate new options
+        removeUsedBlock();
+        
+        // Check for game over with all 3 blocks (2 old + 1 new)
+        if (isGameOver()) {
+            endGame();
+        }
+        
+        updateUI();
+    }
+}
+
+// Show preview of block placement
+function showBlockPreview(row, col) {
+    if (!gameState.selectedBlock) return;
+    
+    clearBlockPreview();
+    const shape = gameState.selectedBlock.shape;
+    const color = gameState.selectedBlock.color;
+    const canPlace = canPlaceBlock(shape, row, col);
+    
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = row + r;
+                const targetCol = col + c;
+                
+                if (targetRow >= 0 && targetRow < GAME_CONFIG.GRID_SIZE && 
+                    targetCol >= 0 && targetCol < GAME_CONFIG.GRID_SIZE) {
+                    const cell = document.querySelector(`[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                    if (cell) {
+                        if (canPlace) {
+                            cell.classList.add('preview');
+                            cell.style.backgroundColor = `${color}66`; // Semi-transparent
+                            cell.style.borderColor = color;
+                            cell.style.boxShadow = `0 0 10px ${color}66`;
+                        } else {
+                            cell.classList.add('invalid-preview');
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Clear block preview
+function clearBlockPreview() {
+    document.querySelectorAll('.grid-cell').forEach(cell => {
+        cell.classList.remove('preview', 'invalid-preview');
+        // Reset custom preview styles
+        if (!cell.classList.contains('filled')) {
+            cell.style.backgroundColor = '';
+            cell.style.borderColor = '';
+            cell.style.boxShadow = '';
+        }
+    });
+}
+
+// Check if block can be placed at position
+function canPlaceBlock(shape, startRow, startCol) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = startRow + r;
+                const targetCol = startCol + c;
+                
+                if (targetRow < 0 || targetRow >= GAME_CONFIG.GRID_SIZE ||
+                    targetCol < 0 || targetCol >= GAME_CONFIG.GRID_SIZE ||
+                    gameState.grid[targetRow][targetCol] === 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Place block on the grid
+function placeBlock(shape, startRow, startCol) {
+    const color = gameState.selectedBlock.color;
+    
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = startRow + r;
+                const targetCol = startCol + c;
+                gameState.grid[targetRow][targetCol] = 1;
+                
+                const cell = document.querySelector(`[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                if (cell) {
+                    cell.classList.add('filled');
+                    // Apply the block's color
+                    cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
+                    cell.style.borderColor = adjustBrightness(color, 20);
+                    cell.style.boxShadow = `0 0 8px ${color}99, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+                }
+            }
+        }
+    }
+}
+
+// Check and clear completed lines
+function checkAndClearLines() {
+    const linesToClear = [];
+    
+    // Check horizontal lines
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        if (gameState.grid[row].every(cell => cell === 1)) {
+            linesToClear.push({ type: 'row', index: row });
+        }
+    }
+    
+    // Check vertical lines
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let isComplete = true;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (gameState.grid[row][col] !== 1) {
+                isComplete = false;
+                break;
+            }
+        }
+        if (isComplete) {
+            linesToClear.push({ type: 'col', index: col });
+        }
+    }
+    
+    // Clear the lines with animation
+    if (linesToClear.length > 0) {
+        clearLinesWithAnimation(linesToClear);
+    }
+    
+    return linesToClear.length;
+}
+
+// Clear lines with animation
+function clearLinesWithAnimation(linesToClear) {
+    // Add clearing animation class
+    linesToClear.forEach(line => {
+        if (line.type === 'row') {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                const cell = document.querySelector(`[data-row="${line.index}"][data-col="${col}"]`);
+                if (cell) cell.classList.add('clearing');
+            }
+        } else {
+            for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+                const cell = document.querySelector(`[data-row="${row}"][data-col="${line.index}"]`);
+                if (cell) cell.classList.add('clearing');
+            }
+        }
+    });
+    
+    // Remove blocks after animation
+    setTimeout(() => {
+        linesToClear.forEach(line => {
+            if (line.type === 'row') {
+                for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                    gameState.grid[line.index][col] = 0;
+                    const cell = document.querySelector(`[data-row="${line.index}"][data-col="${col}"]`);
+                    if (cell) {
+                        cell.classList.remove('filled', 'clearing');
+                        // Reset all custom styles to default empty cell appearance
+                        cell.style.background = '';
+                        cell.style.borderColor = '';
+                        cell.style.boxShadow = '';
+                    }
+                }
+            } else {
+                for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+                    gameState.grid[row][line.index] = 0;
+                    const cell = document.querySelector(`[data-row="${row}"][data-col="${line.index}"]`);
+                    if (cell) {
+                        cell.classList.remove('filled', 'clearing');
+                        // Reset all custom styles to default empty cell appearance
+                        cell.style.background = '';
+                        cell.style.borderColor = '';
+                        cell.style.boxShadow = '';
+                    }
+                }
+            }
+        });
+    }, 500);
+}
+
+// Handle line clear payout
+function handleLineClear(clearedLines) {
+    // Multipliers removed: every line pays flat rate
+    gameState.currentMultiplier = 1;
+    gameState.consecutiveClears = 0;
+    gameState.linesCleared += clearedLines;
+    
+    const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
+    gameState.balance += basePayout;
+    
+    // Show payout animation
+    showPayoutAnimation(basePayout);
+}
+
+// Show payout animation
+function showPayoutAnimation(amount) {
+    const animation = document.createElement('div');
+    animation.className = 'payout-animation';
+    animation.textContent = `+$${amount.toFixed(2)}`;
+    
+    document.body.appendChild(animation);
+    
+    setTimeout(() => {
+        document.body.removeChild(animation);
+    }, 2000);
+}
+
+// Block colors for visual distinction
+const BLOCK_COLORS = ['#ff4444', '#4444ff', '#44ff44', '#ff8800', '#ffff44']; // red, blue, green, orange, yellow
+
+// Generate block options using RTP algorithm
+function generateBlockOptions() {
+    gameState.blockOptions = [];
+    
+    // Calculate current RTP ratio
+    const totalSpent = GAME_CONFIG.GAME_COST;
+    const totalWon = gameState.balance;
+    const currentRTP = totalWon / totalSpent;
+    
+    // Adjust weights based on RTP
+    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
+    
+    for (let i = 0; i < 3; i++) {
+        const blockType = selectWeightedBlock(rtpAdjustment);
+        const blockColor = BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
+        gameState.blockOptions.push({
+            id: i,
+            type: blockType,
+            shape: BLOCK_SHAPES[blockType],
+            color: blockColor
+        });
+    }
+    
+    renderBlockOptions();
+}
+
+// Tiered difficulty system - 25 tables based on lines cleared (every 1 line for maximum progression speed)
+function getDifficultyTier(linesCleared) {
+    return Math.min(Math.floor(linesCleared / 1), 24); // 0-24 tiers (25 total), every 1 line
+}
+
+// Generate difficulty multipliers for each tier (0-24) - BALANCED FOR ~90% RTP
+function getDifficultyMultiplierForTier(tier, blockDifficulty) {
+    // More moderate scaling to reach 90% RTP target
+    const tierProgress = tier / 24; // 0 to 1
+    
+    if (blockDifficulty <= 1.5) {
+        return Math.max(0.3, 1.0 - (tierProgress * 0.6)); // Down to 0.4x
+    } else if (blockDifficulty <= 2.5) {
+        return Math.max(0.4, 1.0 - (tierProgress * 0.5)); // Down to 0.5x
+    } else if (blockDifficulty <= 3.5) {
+        return Math.max(0.5, 1.0 - (tierProgress * 0.4)); // Down to 0.6x
+    } else if (blockDifficulty <= 4.5) {
+        return Math.max(0.6, 1.0 - (tierProgress * 0.3)); // Down to 0.7x
+    } else if (blockDifficulty <= 5.5) {
+        return Math.max(0.7, 1.0 - (tierProgress * 0.2)); // Down to 0.8x
+    } else if (blockDifficulty <= 6.5) {
+        return Math.max(0.8, 1.0 - (tierProgress * 0.1)); // Down to 0.9x
+    } else if (blockDifficulty <= 7.5) {
+        return 1.0 + (tierProgress * 1.5); // Up to 2.5x
+    } else if (blockDifficulty <= 8.5) {
+        return 1.0 + (tierProgress * 2.5); // Up to 3.5x
+    } else {
+        return 1.0 + (tierProgress * 3.5); // Up to 4.5x
+    }
+}
+
+// Select block based on tiered difficulty system
+function selectWeightedBlock(rtpAdjustment) {
+    const weights = {};
+    let totalWeight = 0;
+    
+    // Get current difficulty tier based on lines cleared
+    const difficultyTier = getDifficultyTier(gameState.linesCleared);
+    
+    // Calculate performance-based difficulty adjustment (reduced impact)
+    const performanceMultiplier = calculatePerformanceMultiplier();
+    
+    Object.keys(BLOCK_SHAPES).forEach(blockType => {
+        const config = BLOCK_WEIGHTS[blockType];
+        const difficultyValue = (config && config.difficulty) || BLOCK_DIFFICULTY[blockType] || 1;
+        let weight = applyDifficultyWeight(config ? config.base : 1, difficultyValue);
+        const rtpFactor = config ? config.rtp_factor : 0;
+        
+        // Adjust weight based on RTP - if RTP is low, favor blocks with higher payout potential
+        if (rtpAdjustment > 0) {
+            weight *= (1 + rtpFactor * rtpAdjustment * 0.5); // Much more conservative
+        } else {
+            weight *= (1 + rtpFactor * rtpAdjustment * 0.1); // Much more conservative
+        }
+        
+        // Apply tiered difficulty adjustment based on lines cleared
+        const tierMultiplier = getDifficultyMultiplierForTier(difficultyTier, difficultyValue);
+        weight *= tierMultiplier;
+        
+        // Apply performance-based adjustment (minimal impact)
+        if (performanceMultiplier > 1) {
+            // Player is performing too well, increase weight of harder blocks
+            weight *= (1 + (difficultyValue - 1) * (performanceMultiplier - 1) * 0.05); // Much smaller impact
+        } else if (performanceMultiplier < 1) {
+            // Player is struggling, decrease weight of harder blocks
+            weight *= (1 - (difficultyValue - 1) * (1 - performanceMultiplier) * 0.03); // Much smaller impact
+        }
+        
+        weights[blockType] = Math.max(weight, 0.1); // Ensure minimum weight
+        totalWeight += weights[blockType];
+    });
+    
+    const random = Math.random() * totalWeight;
+    let currentWeight = 0;
+    
+    for (const [blockType, weight] of Object.entries(weights)) {
+        currentWeight += weight;
+        if (random <= currentWeight) {
+            return blockType;
+        }
+    }
+    
+    return 'single'; // Fallback
+}
+
+// Calculate performance multiplier based on recent games
+function calculatePerformanceMultiplier() {
+    if (gameState.recentPerformance.length < 3) {
+        return 1.0; // Not enough data
+    }
+    
+    // Calculate average RTP of recent games
+    const recentRTP = gameState.recentPerformance.reduce((sum, game) => sum + game.rtp, 0) / gameState.recentPerformance.length;
+    
+    // If recent RTP is significantly above target, increase difficulty
+    if (recentRTP > GAME_CONFIG.TARGET_RTP + 0.05) {
+        return Math.min(2.0, 1 + (recentRTP - GAME_CONFIG.TARGET_RTP) * 3);
+    }
+    // If recent RTP is significantly below target, decrease difficulty
+    else if (recentRTP < GAME_CONFIG.TARGET_RTP - 0.05) {
+        return Math.max(0.5, 1 - (GAME_CONFIG.TARGET_RTP - recentRTP) * 2);
+    }
+    
+    return 1.0;
+}
+
+// Render block options
+function renderBlockOptions() {
+    const container = document.getElementById('blockOptions');
+    container.innerHTML = '';
+    
+    gameState.blockOptions.forEach(block => {
+        const option = document.createElement('div');
+        option.className = 'block-option';
+        option.dataset.blockId = block.id;
+        
+        const preview = createBlockPreview(block.shape, block.color);
+        option.appendChild(preview);
+        
+        option.addEventListener('click', () => selectBlock(block));
+        container.appendChild(option);
+    });
+}
+
+// Create visual preview of block
+function createBlockPreview(shape, color) {
+    const preview = document.createElement('div');
+    preview.className = 'block-preview';
+    preview.style.gridTemplateColumns = `repeat(${shape[0].length}, 1fr)`;
+    preview.style.gridTemplateRows = `repeat(${shape.length}, 1fr)`;
+    
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            const cell = document.createElement('div');
+            if (shape[r][c] === 1) {
+                cell.className = 'block-cell';
+                cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
+                cell.style.borderColor = adjustBrightness(color, 20);
+                cell.style.boxShadow = `0 0 4px ${color}66, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+            } else {
+                cell.style.width = '20px';
+                cell.style.height = '20px';
+            }
+            preview.appendChild(cell);
+        }
+    }
+    
+    return preview;
+}
+
+// Utility function to adjust color brightness
+function adjustBrightness(color, amount) {
+    const num = parseInt(color.replace("#", ""), 16);
+    const amt = Math.round(2.55 * amount);
+    const R = (num >> 16) + amt;
+    const G = (num >> 8 & 0x00FF) + amt;
+    const B = (num & 0x0000FF) + amt;
+    return "#" + (0x1000000 + (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 +
+        (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 +
+        (B < 255 ? B < 1 ? 0 : B : 255)).toString(16).slice(1);
+}
+
+// Select a block
+function selectBlock(block) {
+    gameState.selectedBlock = block;
+    
+    // Update UI
+    document.querySelectorAll('.block-option').forEach(option => {
+        option.classList.remove('selected');
+    });
+    
+    document.querySelector(`[data-block-id="${block.id}"]`).classList.add('selected');
+}
+
+// Remove used block and generate new one
+function removeUsedBlock() {
+    if (!gameState.selectedBlock) return;
+    
+    const usedIndex = gameState.selectedBlock.id;
+    
+    // Generate new block for the used slot
+    const totalSpent = GAME_CONFIG.GAME_COST;
+    const totalWon = gameState.balance;
+    const currentRTP = totalWon / totalSpent;
+    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
+    
+    const newBlockType = selectWeightedBlock(rtpAdjustment);
+    const newBlockColor = BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
+    gameState.blockOptions[usedIndex] = {
+        id: usedIndex,
+        type: newBlockType,
+        shape: BLOCK_SHAPES[newBlockType],
+        color: newBlockColor
+    };
+    
+    gameState.selectedBlock = null;
+    renderBlockOptions();
+}
+
+// Check if game is over (no valid moves)
+function isGameOver() {
+    for (const block of gameState.blockOptions) {
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlock(block.shape, row, col)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// End the game
+function endGame() {
+    if (gameState.isGameOver) {
+        stopGameTimer();
+        return;
+    }
+    
+    gameState.isGameOver = true;
+    stopGameTimer();
+    gameState.timeRemaining = 0;
+    
+    // Track game performance
+    trackGamePerformance();
+    
+    document.getElementById('gameOverOverlay').style.display = 'flex';
+    document.getElementById('finalBalance').textContent = gameState.balance.toFixed(2);
+}
+
+// Track performance of completed game
+function trackGamePerformance() {
+    const gameWon = gameState.balance;
+    const gameRTP = gameWon / GAME_CONFIG.GAME_COST;
+    
+    // Add to recent performance (keep last 10 games)
+    gameState.recentPerformance.push({
+        rtp: gameRTP,
+        linesCleared: gameState.linesCleared,
+        finalBalance: gameState.balance
+    });
+    
+    if (gameState.recentPerformance.length > 10) {
+        gameState.recentPerformance.shift();
+    }
+    
+    // Update overall stats
+    gameState.totalGamesPlayed++;
+    gameState.totalAmountWagered += GAME_CONFIG.GAME_COST;
+    gameState.totalAmountWon += gameWon;
+}
+
+// Start new game
+function startNewGame() {
+    if (gameState.balance < GAME_CONFIG.GAME_COST) {
+        alert('Insufficient balance to start a new game!');
+        return;
+    }
+    
+    stopGameTimer();
+    
+    gameState.balance -= GAME_CONFIG.GAME_COST;
+    gameState.currentMultiplier = 1;
+    gameState.linesCleared = 0;
+    gameState.selectedBlock = null;
+    gameState.isGameOver = false;
+    gameState.consecutiveClears = 0;
+    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
+    
+    document.getElementById('gameOverOverlay').style.display = 'none';
+    
+    createGrid();
+    generateBlockOptions();
+    
+    // Check if game is immediately over (very rare but possible)
+    if (isGameOver()) {
+        endGame();
+    } else {
+        startGameTimer();
+    }
+    
+    updateUI();
+}
+
+// Update UI elements
+function updateUI() {
+    document.getElementById('balance').textContent = gameState.balance.toFixed(2);
+    document.getElementById('multiplier').textContent = gameState.currentMultiplier;
+    document.getElementById('linesCleared').textContent = gameState.linesCleared;
+    
+    const timerElement = document.getElementById('timer');
+    if (timerElement) {
+        timerElement.textContent = `${Math.max(0, Math.ceil(gameState.timeRemaining))}s`;
+    }
+}
+
+// Handle keyboard input
+function handleKeyPress(event) {
+    if (event.key >= '1' && event.key <= '3') {
+        const blockIndex = parseInt(event.key) - 1;
+        if (gameState.blockOptions[blockIndex]) {
+            selectBlock(gameState.blockOptions[blockIndex]);
+        }
+    }
+}
+
+// Auto play functionality
+function toggleAutoPlay() {
+    gameState.autoPlay = !gameState.autoPlay;
+    const btn = document.getElementById('autoPlayBtn');
+    
+    if (gameState.autoPlay) {
+        btn.textContent = 'Stop Auto';
+        btn.classList.add('active');
+        autoPlayLoop();
+    } else {
+        btn.textContent = 'Auto Play';
+        btn.classList.remove('active');
+    }
+}
+
+// Auto play loop
+function autoPlayLoop() {
+    if (!gameState.autoPlay || gameState.isGameOver) return;
+    
+    // Simple AI: try to place blocks that complete lines
+    let bestMove = findBestMove();
+    
+    if (bestMove) {
+        selectBlock(bestMove.block);
+        setTimeout(() => {
+            handleCellClick(bestMove.row, bestMove.col);
+            setTimeout(autoPlayLoop, 1000);
+        }, 500);
+    } else {
+        gameState.autoPlay = false;
+        toggleAutoPlay();
+    }
+}
+
+// Advanced AI: Find best move for auto play
+function findBestMove() {
+    let bestScore = -Infinity;
+    let bestMove = null;
+    
+    // Evaluate all possible moves for all blocks
+    for (const block of gameState.blockOptions) {
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlock(block.shape, row, col)) {
+                    const score = evaluateMove(block.shape, row, col, block);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMove = { block, row, col, score };
+                    }
+                }
+            }
+        }
+    }
+    
+    return bestMove;
+}
+
+// Advanced move evaluation with multiple strategic factors
+function evaluateMove(shape, startRow, startCol, block) {
+    // Create temporary grid
+    const tempGrid = gameState.grid.map(row => [...row]);
+    
+    // Place block on temp grid
+    const placedCells = [];
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                tempGrid[startRow + r][startCol + c] = 1;
+                placedCells.push({ row: startRow + r, col: startCol + c });
+            }
+        }
+    }
+    
+    let score = 0;
+    
+    // 1. IMMEDIATE LINE COMPLETION (Highest Priority)
+    const completedLines = countCompletedLines(tempGrid);
+    score += completedLines * 1000; // Very high reward for completing lines
+    
+    // 2. NEAR-COMPLETION BONUS (Lines close to being completed)
+    score += evaluateNearCompletions(tempGrid) * 100;
+    
+    // 3. STRATEGIC POSITIONING
+    score += evaluateStrategicPositioning(tempGrid, placedCells) * 50;
+    
+    // 4. SPACE EFFICIENCY (Avoid creating unreachable holes)
+    score += evaluateSpaceEfficiency(tempGrid, placedCells) * 30;
+    
+    // 5. FUTURE MOVE POTENTIAL (Keep options open)
+    score += evaluateFuturePotential(tempGrid, block) * 20;
+    
+    // 6. EDGE AND CORNER PREFERENCE (Better for line completion)
+    score += evaluateEdgeCornerBonus(placedCells) * 15;
+    
+    // 7. DENSITY OPTIMIZATION (Fill gaps efficiently)
+    score += evaluateDensityOptimization(tempGrid, placedCells) * 25;
+    
+    // 8. AVOID CREATING ISOLATED HOLES
+    score -= evaluateIsolatedHoles(tempGrid) * 200;
+    
+    return score;
+}
+
+// Count completed lines after move
+function countCompletedLines(grid) {
+    let completedLines = 0;
+    
+    // Check rows
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        if (grid[row].every(cell => cell === 1)) {
+            completedLines++;
+        }
+    }
+    
+    // Check columns
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let isComplete = true;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (grid[row][col] !== 1) {
+                isComplete = false;
+                break;
+            }
+        }
+        if (isComplete) completedLines++;
+    }
+    
+    return completedLines;
+}
+
+// Evaluate lines that are close to completion
+function evaluateNearCompletions(grid) {
+    let score = 0;
+    
+    // Check rows
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        const filledCells = grid[row].filter(cell => cell === 1).length;
+        if (filledCells >= 6) score += (filledCells - 5) * 2; // Bonus for nearly complete rows
+    }
+    
+    // Check columns
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let filledCells = 0;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (grid[row][col] === 1) filledCells++;
+        }
+        if (filledCells >= 6) score += (filledCells - 5) * 2; // Bonus for nearly complete columns
+    }
+    
+    return score;
+}
+
+// Evaluate strategic positioning (connecting to existing blocks)
+function evaluateStrategicPositioning(grid, placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        let adjacentFilled = 0;
+        
+        // Check all 4 directions
+        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        for (const [dr, dc] of directions) {
+            const newRow = cell.row + dr;
+            const newCol = cell.col + dc;
+            
+            if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
+                newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
+                grid[newRow][newCol] === 1) {
+                adjacentFilled++;
+            }
+        }
+        
+        score += adjacentFilled; // Bonus for connecting to existing blocks
+    }
+    
+    return score;
+}
+
+// Evaluate space efficiency (avoid creating unreachable areas)
+function evaluateSpaceEfficiency(grid, placedCells) {
+    let score = 0;
+    
+    // Prefer moves that don't create small isolated empty spaces
+    for (const cell of placedCells) {
+        const surroundingEmpty = countSurroundingEmpty(grid, cell.row, cell.col);
+        if (surroundingEmpty <= 2) score += 3; // Bonus for filling tight spaces
+    }
+    
+    return score;
+}
+
+// Count empty cells around a position
+function countSurroundingEmpty(grid, row, col) {
+    let emptyCount = 0;
+    const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    
+    for (const [dr, dc] of directions) {
+        const newRow = row + dr;
+        const newCol = col + dc;
+        
+        if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
+            newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
+            grid[newRow][newCol] === 0) {
+            emptyCount++;
+        }
+    }
+    
+    return emptyCount;
+}
+
+// Evaluate future move potential (keep options open)
+function evaluateFuturePotential(grid, currentBlock) {
+    let score = 0;
+    
+    // Simulate remaining blocks and count possible placements
+    const remainingBlocks = gameState.blockOptions.filter(b => b.id !== currentBlock.id);
+    
+    for (const block of remainingBlocks) {
+        let possiblePlacements = 0;
+        
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlockOnGrid(block.shape, row, col, grid)) {
+                    possiblePlacements++;
+                }
+            }
+        }
+        
+        score += Math.min(possiblePlacements, 10); // Cap to avoid over-weighting
+    }
+    
+    return score;
+}
+
+// Check if block can be placed on a specific grid
+function canPlaceBlockOnGrid(shape, startRow, startCol, grid) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = startRow + r;
+                const targetCol = startCol + c;
+                
+                if (targetRow < 0 || targetRow >= GAME_CONFIG.GRID_SIZE ||
+                    targetCol < 0 || targetCol >= GAME_CONFIG.GRID_SIZE ||
+                    grid[targetRow][targetCol] === 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Evaluate edge and corner placement bonus
+function evaluateEdgeCornerBonus(placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        // Corner bonus
+        if ((cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1) && 
+            (cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1)) {
+            score += 2;
+        }
+        // Edge bonus
+        else if (cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1 || 
+                 cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1) {
+            score += 1;
+        }
+    }
+    
+    return score;
+}
+
+// Evaluate density optimization (fill existing clusters)
+function evaluateDensityOptimization(grid, placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        // Count filled cells in 3x3 area around placement
+        let localDensity = 0;
+        
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+                const checkRow = cell.row + dr;
+                const checkCol = cell.col + dc;
+                
+                if (checkRow >= 0 && checkRow < GAME_CONFIG.GRID_SIZE && 
+                    checkCol >= 0 && checkCol < GAME_CONFIG.GRID_SIZE && 
+                    grid[checkRow][checkCol] === 1) {
+                    localDensity++;
+                }
+            }
+        }
+        
+        score += localDensity; // Bonus for high local density
+    }
+    
+    return score;
+}
+
+// Evaluate and penalize isolated holes creation
+function evaluateIsolatedHoles(grid) {
+    let isolatedHoles = 0;
+    
+    for (let row = 1; row < GAME_CONFIG.GRID_SIZE - 1; row++) {
+        for (let col = 1; col < GAME_CONFIG.GRID_SIZE - 1; col++) {
+            if (grid[row][col] === 0) {
+                // Check if this empty cell is surrounded by filled cells
+                let surroundedCount = 0;
+                const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+                
+                for (const [dr, dc] of directions) {
+                    if (grid[row + dr][col + dc] === 1) {
+                        surroundedCount++;
+                    }
+                }
+                
+                if (surroundedCount >= 3) {
+                    isolatedHoles++;
+                }
+            }
+        }
+    }
+    
+    return isolatedHoles;
+}
+
+// RTP Simulation functionality - DETAILED REPORT
+async function runRTPSimulation() {
+    console.log('Starting detailed RTP simulation...');
+    
+    const simulationBtn = document.getElementById('simulationBtn');
+    const resultsDiv = document.getElementById('simulationResults');
+    const statusSpan = document.getElementById('simStatus');
+    const gamesSpan = document.getElementById('simGames');
+    const rtpSpan = document.getElementById('simRTP');
+    const linesSpan = document.getElementById('simLines');
+    
+    if (!simulationBtn || !resultsDiv || !statusSpan || !gamesSpan || !rtpSpan || !linesSpan) {
+        console.error('Simulation UI elements not found');
+        alert('Simulation UI elements not found. Please refresh the page.');
+        return;
+    }
+    
+    // Disable button and show results
+    simulationBtn.disabled = true;
+    simulationBtn.textContent = 'Running...';
+    resultsDiv.style.display = 'block';
+    statusSpan.textContent = 'Running';
+    
+    const totalGames = 1000;
+    let totalCoinIn = 0;
+    let totalCoinOut = 0;
+    let totalLines = 0;
+    let gamesCompleted = 0;
+    
+    // DETAILED GAME REPORT
+    const gameReports = [];
+    
+    // Save current game state (deep copy)
+    const originalState = JSON.parse(JSON.stringify(gameState));
+    
+    try {
+        console.log('=== DETAILED GAME REPORT ===');
+        console.log('Game#, CoinIn, CoinOut, Lines, Multipliers, RTP%');
+        
+        // Run simulation game by game for detailed reporting
+        for (let gameNum = 1; gameNum <= totalGames; gameNum++) {
+            try {
+                const result = simulateGame();
+                
+                const coinIn = 1.00;
+                const coinOut = result.finalBalance;
+                const gameRTP = (coinOut / coinIn) * 100;
+                
+                totalCoinIn += coinIn;
+                totalCoinOut += coinOut;
+                totalLines += result.linesCleared;
+                gamesCompleted++;
+                
+                // Store detailed report
+                gameReports.push({
+                    game: gameNum,
+                    coinIn: coinIn,
+                    coinOut: coinOut,
+                    lines: result.linesCleared,
+                    moves: result.moves,
+                    rtp: gameRTP
+                });
+                
+                // Log every 100th game
+                if (gameNum % 100 === 0) {
+                    console.log(`${gameNum}, $${coinIn.toFixed(2)}, $${coinOut.toFixed(4)}, ${result.linesCleared}, ${result.moves} moves, ${gameRTP.toFixed(2)}%`);
+                    
+                    const currentRTP = (totalCoinOut / totalCoinIn) * 100;
+                    gamesSpan.textContent = gamesCompleted.toLocaleString();
+                    rtpSpan.textContent = currentRTP.toFixed(2) + '%';
+                    linesSpan.textContent = (totalLines / gamesCompleted).toFixed(1);
+                }
+                
+            } catch (gameError) {
+                console.error(`Error in game ${gameNum}:`, gameError);
+                totalCoinIn += 1.00; // Still count the wager
+                gamesCompleted++;
+            }
+        }
+        
+        // Final detailed results
+        const finalRTP = (totalCoinOut / totalCoinIn) * 100;
+        const avgLines = totalLines / totalGames;
+        
+        // Debug UI values
+        console.log(`UI UPDATE: totalCoinOut=${totalCoinOut}, totalCoinIn=${totalCoinIn}, finalRTP=${finalRTP}`);
+        
+        gamesSpan.textContent = totalGames.toLocaleString();
+        rtpSpan.textContent = finalRTP.toFixed(2) + '%';
+        linesSpan.textContent = avgLines.toFixed(1);
+        statusSpan.textContent = 'Complete';
+        
+        console.log('=== FINAL SUMMARY ===');
+        console.log(`Total Games: ${totalGames}`);
+        console.log(`Total Coin In: $${totalCoinIn.toFixed(2)}`);
+        console.log(`Total Coin Out: $${totalCoinOut.toFixed(2)}`);
+        console.log(`Manual RTP Calculation: ($${totalCoinOut.toFixed(2)} / $${totalCoinIn.toFixed(2)}) * 100 = ${finalRTP.toFixed(4)}%`);
+        console.log(`Average Lines per Game: ${avgLines.toFixed(2)}`);
+        console.log(`Expected base payout: ${avgLines.toFixed(2)} lines × $${GAME_CONFIG.LINE_PAYOUT.toFixed(2)} = $${(avgLines * GAME_CONFIG.LINE_PAYOUT).toFixed(4)} per game`);
+        console.log(`Expected RTP without multipliers: ${((avgLines * GAME_CONFIG.LINE_PAYOUT) * 100).toFixed(2)}%`);
+        
+        // Sample of first 10 games
+        console.log('=== FIRST 10 GAMES SAMPLE ===');
+        gameReports.slice(0, 10).forEach(game => {
+            console.log(`Game ${game.game}: In=$${game.coinIn.toFixed(2)}, Out=$${game.coinOut.toFixed(4)}, Lines=${game.lines}, RTP=${game.rtp.toFixed(2)}%`);
+        });
+        
+    } catch (error) {
+        console.error('Simulation error:', error);
+        statusSpan.textContent = 'Error';
+    } finally {
+        // Restore original game state (deep copy)
+        Object.assign(gameState, JSON.parse(JSON.stringify(originalState)));
+        
+        // Re-enable button
+        simulationBtn.disabled = false;
+        simulationBtn.textContent = 'Run Simulation (10k games)';
+    }
+}
+
+// Simulate a single game using AI
+function simulateGame() {
+    try {
+        // Initialize simulation game state - START WITH $1.00
+        const simState = {
+            grid: Array(GAME_CONFIG.GRID_SIZE).fill().map(() => Array(GAME_CONFIG.GRID_SIZE).fill(0)),
+            balance: 1.00, // Start each game with $1.00
+            currentMultiplier: 1,
+            linesCleared: 0,
+            consecutiveClears: 0,
+            blockOptions: [],
+            isGameOver: false,
+            selectedBlock: null,
+            autoPlay: false,
+            // Performance tracking for dynamic RTP
+            totalGamesPlayed: 0,
+            totalAmountWagered: 0,
+            totalAmountWon: 0,
+            recentPerformance: [],
+            difficultyMultiplier: 1.0
+        };
+        
+        // Temporarily override global state for simulation
+        const originalGameState = JSON.parse(JSON.stringify(gameState));
+        Object.assign(gameState, simState);
+    
+        // Deduct game cost - now player has $0.00 to start playing
+        gameState.balance -= GAME_CONFIG.GAME_COST;
+    
+    // Generate initial blocks
+    generateBlockOptionsForSimulation();
+    
+    let moves = 0;
+    const maxMoves = 1000; // Prevent infinite loops
+    
+    // Play until game over or max moves
+    while (!isGameOverSimulation() && moves < maxMoves) {
+        const bestMove = findBestMoveSimulation();
+        if (!bestMove) break;
+        
+        // Place the block
+        placeBlockSimulation(bestMove.block.shape, bestMove.row, bestMove.col);
+        
+        // Check and clear lines
+        const clearedLines = checkAndClearLinesSimulation();
+        if (clearedLines > 0) {
+            handleLineClearSimulation(clearedLines);
+        } else {
+            simState.consecutiveClears = 0;
+            simState.currentMultiplier = 1;
+        }
+        
+        // Generate new block
+        removeUsedBlockSimulation(bestMove.block.id);
+        
+        moves++;
+    }
+    
+    // Final balance is what the player ends with (after paying $1 to play)
+    const finalBalance = gameState.balance;
+    const linesCleared = gameState.linesCleared;
+    
+    // Restore original game state
+    Object.assign(gameState, originalGameState);
+    
+        return {
+            finalBalance: finalBalance, // This is the money the player ends with
+            linesCleared: linesCleared,
+            moves: moves
+        };
+    } catch (error) {
+        console.error('Error in simulateGame:', error);
+        // Return default values on error
+        return {
+            finalBalance: 0,
+            linesCleared: 0,
+            moves: 0
+        };
+    }
+}
+
+// Simulation helper functions (simplified versions without DOM manipulation)
+function generateBlockOptionsForSimulation() {
+    gameState.blockOptions = [];
+    const totalSpent = GAME_CONFIG.GAME_COST;
+    const totalWon = gameState.balance;
+    const currentRTP = totalWon / totalSpent;
+    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
+    
+    for (let i = 0; i < 3; i++) {
+        const blockType = selectWeightedBlock(rtpAdjustment);
+        gameState.blockOptions.push({
+            id: i,
+            type: blockType,
+            shape: BLOCK_SHAPES[blockType]
+        });
+    }
+}
+
+function isGameOverSimulation() {
+    for (const block of gameState.blockOptions) {
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlockOnGrid(block.shape, row, col, gameState.grid)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+function findBestMoveSimulation() {
+    let bestScore = -Infinity;
+    let bestMove = null;
+    
+    // Evaluate all possible moves for all blocks using the same advanced AI
+    for (const block of gameState.blockOptions) {
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlockOnGrid(block.shape, row, col, gameState.grid)) {
+                    const score = evaluateMoveForSimulation(block.shape, row, col, block);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMove = { block, row, col, score };
+                    }
+                }
+            }
+        }
+    }
+    
+    return bestMove;
+}
+
+// Advanced move evaluation for simulation (same logic as main game)
+function evaluateMoveForSimulation(shape, startRow, startCol, block) {
+    // Create temporary grid
+    const tempGrid = gameState.grid.map(row => [...row]);
+    
+    // Place block on temp grid
+    const placedCells = [];
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                tempGrid[startRow + r][startCol + c] = 1;
+                placedCells.push({ row: startRow + r, col: startCol + c });
+            }
+        }
+    }
+    
+    let score = 0;
+    
+    // 1. IMMEDIATE LINE COMPLETION (Highest Priority)
+    const completedLines = countCompletedLines(tempGrid);
+    score += completedLines * 1000; // Very high reward for completing lines
+    
+    // 2. NEAR-COMPLETION BONUS (Lines close to being completed)
+    score += evaluateNearCompletionsForSim(tempGrid) * 100;
+    
+    // 3. STRATEGIC POSITIONING
+    score += evaluateStrategicPositioningForSim(tempGrid, placedCells) * 50;
+    
+    // 4. SPACE EFFICIENCY (Avoid creating unreachable holes)
+    score += evaluateSpaceEfficiencyForSim(tempGrid, placedCells) * 30;
+    
+    // 5. FUTURE MOVE POTENTIAL (Keep options open)
+    score += evaluateFuturePotentialForSim(tempGrid, block) * 20;
+    
+    // 6. EDGE AND CORNER PREFERENCE (Better for line completion)
+    score += evaluateEdgeCornerBonusForSim(placedCells) * 15;
+    
+    // 7. DENSITY OPTIMIZATION (Fill gaps efficiently)
+    score += evaluateDensityOptimizationForSim(tempGrid, placedCells) * 25;
+    
+    // 8. AVOID CREATING ISOLATED HOLES
+    score -= evaluateIsolatedHolesForSim(tempGrid) * 200;
+    
+    return score;
+}
+
+// Simulation versions of evaluation functions
+function evaluateNearCompletionsForSim(grid) {
+    let score = 0;
+    
+    // Check rows
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        const filledCells = grid[row].filter(cell => cell === 1).length;
+        if (filledCells >= 6) score += (filledCells - 5) * 2;
+    }
+    
+    // Check columns
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let filledCells = 0;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (grid[row][col] === 1) filledCells++;
+        }
+        if (filledCells >= 6) score += (filledCells - 5) * 2;
+    }
+    
+    return score;
+}
+
+function evaluateStrategicPositioningForSim(grid, placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        let adjacentFilled = 0;
+        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        
+        for (const [dr, dc] of directions) {
+            const newRow = cell.row + dr;
+            const newCol = cell.col + dc;
+            
+            if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
+                newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
+                grid[newRow][newCol] === 1) {
+                adjacentFilled++;
+            }
+        }
+        
+        score += adjacentFilled;
+    }
+    
+    return score;
+}
+
+function evaluateSpaceEfficiencyForSim(grid, placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        const surroundingEmpty = countSurroundingEmptyForSim(grid, cell.row, cell.col);
+        if (surroundingEmpty <= 2) score += 3;
+    }
+    
+    return score;
+}
+
+function countSurroundingEmptyForSim(grid, row, col) {
+    let emptyCount = 0;
+    const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    
+    for (const [dr, dc] of directions) {
+        const newRow = row + dr;
+        const newCol = col + dc;
+        
+        if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
+            newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
+            grid[newRow][newCol] === 0) {
+            emptyCount++;
+        }
+    }
+    
+    return emptyCount;
+}
+
+function evaluateFuturePotentialForSim(grid, currentBlock) {
+    let score = 0;
+    
+    const remainingBlocks = gameState.blockOptions.filter(b => b.id !== currentBlock.id);
+    
+    for (const block of remainingBlocks) {
+        let possiblePlacements = 0;
+        
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlockOnGrid(block.shape, row, col, grid)) {
+                    possiblePlacements++;
+                }
+            }
+        }
+        
+        score += Math.min(possiblePlacements, 10);
+    }
+    
+    return score;
+}
+
+function evaluateEdgeCornerBonusForSim(placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        // Corner bonus
+        if ((cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1) && 
+            (cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1)) {
+            score += 2;
+        }
+        // Edge bonus
+        else if (cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1 || 
+                 cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1) {
+            score += 1;
+        }
+    }
+    
+    return score;
+}
+
+function evaluateDensityOptimizationForSim(grid, placedCells) {
+    let score = 0;
+    
+    for (const cell of placedCells) {
+        let localDensity = 0;
+        
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+                const checkRow = cell.row + dr;
+                const checkCol = cell.col + dc;
+                
+                if (checkRow >= 0 && checkRow < GAME_CONFIG.GRID_SIZE && 
+                    checkCol >= 0 && checkCol < GAME_CONFIG.GRID_SIZE && 
+                    grid[checkRow][checkCol] === 1) {
+                    localDensity++;
+                }
+            }
+        }
+        
+        score += localDensity;
+    }
+    
+    return score;
+}
+
+function evaluateIsolatedHolesForSim(grid) {
+    let isolatedHoles = 0;
+    
+    for (let row = 1; row < GAME_CONFIG.GRID_SIZE - 1; row++) {
+        for (let col = 1; col < GAME_CONFIG.GRID_SIZE - 1; col++) {
+            if (grid[row][col] === 0) {
+                let surroundedCount = 0;
+                const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+                
+                for (const [dr, dc] of directions) {
+                    if (grid[row + dr][col + dc] === 1) {
+                        surroundedCount++;
+                    }
+                }
+                
+                if (surroundedCount >= 3) {
+                    isolatedHoles++;
+                }
+            }
+        }
+    }
+    
+    return isolatedHoles;
+}
+
+function placeBlockSimulation(shape, startRow, startCol) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                gameState.grid[startRow + r][startCol + c] = 1;
+            }
+        }
+    }
+}
+
+function checkAndClearLinesSimulation() {
+    const linesToClear = [];
+    
+    // Check horizontal lines
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        if (gameState.grid[row].every(cell => cell === 1)) {
+            linesToClear.push({ type: 'row', index: row });
+        }
+    }
+    
+    // Check vertical lines
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let isComplete = true;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (gameState.grid[row][col] !== 1) {
+                isComplete = false;
+                break;
+            }
+        }
+        if (isComplete) {
+            linesToClear.push({ type: 'col', index: col });
+        }
+    }
+    
+    // Clear the lines
+    linesToClear.forEach(line => {
+        if (line.type === 'row') {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                gameState.grid[line.index][col] = 0;
+            }
+        } else {
+            for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+                gameState.grid[row][line.index] = 0;
+            }
+        }
+    });
+    
+    return linesToClear.length;
+}
+
+function handleLineClearSimulation(clearedLines) {
+    gameState.consecutiveClears = 0;
+    gameState.currentMultiplier = 1;
+    gameState.linesCleared += clearedLines;
+    
+    const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
+    gameState.balance += basePayout;
+}
+
+function removeUsedBlockSimulation(usedIndex) {
+    const totalSpent = GAME_CONFIG.GAME_COST;
+    const totalWon = gameState.balance;
+    const currentRTP = totalWon / totalSpent;
+    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
+    
+    const newBlockType = selectWeightedBlock(rtpAdjustment);
+    gameState.blockOptions[usedIndex] = {
+        id: usedIndex,
+        type: newBlockType,
+        shape: BLOCK_SHAPES[newBlockType]
+    };
+}
+
+// Initialize game when page loads
+document.addEventListener('DOMContentLoaded', initGame);
