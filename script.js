@@ -3,10 +3,11 @@ const GAME_CONFIG = {
     GRID_SIZE: 7,
     INITIAL_BALANCE: 10.00,
     GAME_COST: 1.00,
-    LINE_PAYOUT: 0.04, // 40 cents per line
+    LINE_PAYOUT: 0.20, // $2.00 per line
     TARGET_RTP: 0.97, // 97% return to player
     MAX_MULTIPLIER: 10,
-    TURN_TIME_LIMIT: 30 // seconds
+    TURN_TIME_LIMIT: 30, // seconds
+    TIME_BONUS_PER_LINE: 1 // seconds added per cleared line
 };
 
 // Game State
@@ -62,6 +63,7 @@ function startGameTimer() {
 const BLOCK_SHAPES = {
     single: [[1]],
     double: [[1, 1]],
+    double_vertical: [[1], [1]],
     I_piece: [[1, 1, 1, 1]],
     I_piece_vertical: [[1], [1], [1], [1]],
     O_piece: [[1, 1], [1, 1]],
@@ -87,6 +89,7 @@ const BLOCK_SHAPES = {
 const BLOCK_DIFFICULTY = {
     single: 1,
     double: 1,
+    double_vertical: 1,
     I_piece: 3,
     I_piece_vertical: 3,
     O_piece: 3,
@@ -127,6 +130,7 @@ function applyDifficultyWeight(baseWeight = 1, difficultyValue = 1) {
 const BLOCK_WEIGHTS = {
     single: { base: 18, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
     double: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double },
+    double_vertical: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double_vertical },
     I_piece: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece },
     I_piece_vertical: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece_vertical },
     O_piece: { base: 11, rtp_factor: 0.7, difficulty: BLOCK_DIFFICULTY.O_piece },
@@ -170,7 +174,7 @@ function initGame() {
     document.addEventListener('keydown', handleKeyPress);
 }
 
-// Create the 8x8 grid
+// Create the 7x7 grid
 function createGrid() {
     gameState.grid = Array(GAME_CONFIG.GRID_SIZE).fill().map(() => 
         Array(GAME_CONFIG.GRID_SIZE).fill(0)
@@ -405,6 +409,9 @@ function handleLineClear(clearedLines) {
     
     const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
     gameState.balance += basePayout;
+    
+    const timeBonus = GAME_CONFIG.TIME_BONUS_PER_LINE * clearedLines;
+    gameState.timeRemaining += timeBonus;
     
     // Show payout animation
     showPayoutAnimation(basePayout);
@@ -1608,6 +1615,8 @@ function handleLineClearSimulation(clearedLines) {
     
     const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
     gameState.balance += basePayout;
+    const timeBonus = GAME_CONFIG.TIME_BONUS_PER_LINE * clearedLines;
+    gameState.timeRemaining += timeBonus;
 }
 
 function removeUsedBlockSimulation(usedIndex) {

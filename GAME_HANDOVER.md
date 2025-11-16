@@ -7,11 +7,11 @@ This document captures the current production logic so another developer can reb
 ## 1. Core Loop
 
 1. Player pays `$1.00` to start a game.  
-2. Board = `8 × 8` grid.  
+2. Board = `7 × 7` grid.  
 3. Three block offers are shown at a time.  
 4. Player (or autoplay AI) places one offer, block replaced immediately.  
 5. When rows or columns are filled they clear and pay; play continues until no placements are possible.  
-6. Each cleared line pays `LINE_PAYOUT = $0.40`. 
+6. Each cleared line pays `LINE_PAYOUT = $2.00` and adds 1s to the timer. 
 7. Final balance is the total payout earned during the run.
 
 ---
@@ -21,31 +21,14 @@ This document captures the current production logic so another developer can reb
 | Category | Key | Shape | Difficulty | Base Weight | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Single | `single` | `[[1]]` | 1.0 | 18 | High frequency starter |
-| Double | `double` | `[[1,1]]` | 1.5 | 16 | Fits gaps easily |
-| Lines | `line2`, `line2_vertical` | 2 cells | 2.0 | 12 | Horizontal/vertical |
-| Lines | `line3`, `line3_vertical` | 3 cells | 2.5 | 10 |  |
-| Lines | `line4`, `line4_vertical` | 4 cells | 3.5 | 8 |  |
-| Lines | `line5`, `line5_vertical` | 5 cells | 5.0 | 5 | Harder, higher RTP factor |
-| Squares | `square2x2` | 2×2 | 3.0 | 12 | Stable filler |
-| Squares | `square3x3` | 3×3 | 7.0 | 4 | Difficult to place |
-| Rectangles | `rect2x3`, `rect3x2` | 2×3 / 3×2 | 4.0 | 7 |  |
-| Classic | `I_piece`, `I_piece_vertical` | 1×4 | 3.5 | 9 | |
-| Classic | `O_piece` | 2×2 | 3.0 | 11 | |
-| Classic | `T_piece` (+ rotations) | T shape | 4.0 | 10 | All four orientations |
-| Classic | `L_piece` (+ rotations) | L shape | 4.5 | 9 | |
-| Classic | `J_piece` (+ rotations) | Reverse L | 4.5 | 9 | |
-| Classic | `S_piece` (+ rotations) | S-shape | 5.5 | 8 | |
-| Classic | `Z_piece` (+ rotations) | Z-shape | 5.5 | 8 | |
-| Long | `long6`, `long6_vertical` | 6 cells | 8.5 | 4 | Rare, high RTP factor |
-| Asymmetric | `snake_long`, `snake_long_vertical` | snake | 6.5 | 7 | |
-| Asymmetric | `hook`, `hook_rotated` | hook | 6.0 | 8 | |
-| Cross | `cross` | `[[0,1,0],[1,1,1],[0,1,0]]` | 5.0 | 9 | |
-| Plus | `plus_big` | large + | 9.0 | 3 | |
-| Corner | `corner2x2`(all rotations) | L 2×2 | 2.5 | 14 | |
-| Diagonal | `diagonal3`, `diagonal3_reverse` | diagonal | 6.0 | 6 | |
-| Stair | `stair3`, `stair3_reverse` | stairs | 5.5 | 7 | |
-| Hollow | `hollow_square`, `hollow_cross` | rings | 8.0 / 7.5 | 3 / 4 | |
-| Cluster | `cluster4`, `cluster5_cross`, `cluster5_plus` | compact clusters | ~3–5 | 10 / 8 / 9 | |
+| Double | `double`, `double_vertical` | 1×2 / 2×1 | 1.0 | 16 | Simple gap fillers |
+| Classic | `I_piece`, `I_piece_vertical` | 1×4 | 3.0 | 9 | Straight tetromino |
+| Classic | `O_piece` | 2×2 | 3.0 | 11 | Compact square |
+| Classic | `T_piece` (+ rotations) | T shape | 4.0 | 10 | Four orientations kept |
+| Classic | `L_piece` (+ rotations) | L shape | 4.0 | 9 | Four orientations kept |
+| Classic | `J_piece` (+ rotations) | Reverse L | 4.0 | 9 | Four orientations kept |
+| Classic | `S_piece`, `S_piece_vertical` | S-shape | 4.0 | 8 | Includes vertical |
+| Classic | `Z_piece`, `Z_piece_vertical` | Z-shape | 4.0 | 8 | Includes vertical |
 
 **Key fields:**
 - **Difficulty**: 1 (very easy) → 10 (nearly impossible). Used by tier scaling.
@@ -125,7 +108,8 @@ Tracks the average RTP of the last 10 games.
 | Name | Value | Notes |
 | --- | --- | --- |
 | `GRID_SIZE` | 8 | Board dimensions |
-| `LINE_PAYOUT` | `$0.40` | Flat payout per cleared line |
+| `LINE_PAYOUT` | `$2.00` | Flat payout per cleared line |
+| `TIME_BONUS_PER_LINE` | `1s` | Time added per cleared line |
 | `GAME_COST` | `$1.00` | Entry fee |
 | `TARGET_RTP` | `0.97` | Used for weight steering |
 | `MAX_MULTIPLIER` | 10 | Currently unused (multipliers disabled) |
