@@ -3,11 +3,15 @@ const GAME_CONFIG = {
     GRID_SIZE: 7,
     INITIAL_BALANCE: 10.00,
     GAME_COST: 1.00,
-    LINE_PAYOUT: 0.20, // $2.00 per line
+    LINE_PAYOUT: 0.025, // $2.00 per line
     TARGET_RTP: 0.97, // 97% return to player
     MAX_MULTIPLIER: 10,
-    TURN_TIME_LIMIT: 30, // seconds
-    TIME_BONUS_PER_LINE: 1 // seconds added per cleared line
+    // Max win that is allowed for a single round (can be overridden by backend)
+    MAX_ROUND_WIN: 10.00,
+    // Turn timer configuration
+    TURN_TIME_LIMIT: 15,
+    // Golden pot configuration
+    POT_LIMIT: 5
 };
 
 // Game State
@@ -27,35 +31,56 @@ let gameState = {
     totalAmountWon: 0,
     recentPerformance: [], // Last 10 games performance
     difficultyMultiplier: 1.0, // Increases as player performs too well
-    timeRemaining: 0,
-    timerInterval: null
+    // Global timer for turn countdown
+    timerInterval: null,
+    timeRemaining: GAME_CONFIG.TURN_TIME_LIMIT,
+    currentTurnTimeLimit: GAME_CONFIG.TURN_TIME_LIMIT,
+    // Round tracking (balance at the start of the round after cost is deducted)
+    roundStartBalance: GAME_CONFIG.INITIAL_BALANCE,
+    // Block set tracking (5-block cycles)
+    blocksPlacedInSet: 0,
+    // Golden pot
+    potValue: 0,
+    goldenCells: new Set(),
+    // Golden block batch + tracking
+    goldenBatchActive: false,
+    goldenBatchBlocksRemaining: 0,
+    goldenBlocks: []
 };
 
-function stopGameTimer() {
+function stopTurnTimer() {
     if (gameState.timerInterval) {
         clearInterval(gameState.timerInterval);
         gameState.timerInterval = null;
     }
 }
 
-function startGameTimer() {
-    stopGameTimer();
-    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
-    updateUI();
-    
+// Show timer expiry message
+function showTimerExpiredMessage() {
+    // Timer expired - game ends
+}
+
+function startTurnTimer() {
+    stopTurnTimer();
+    // Responsible for turn countdown
     gameState.timerInterval = setInterval(() => {
         if (gameState.isGameOver) {
-            stopGameTimer();
+            stopTurnTimer();
             return;
         }
-        
-        gameState.timeRemaining = Math.max(0, gameState.timeRemaining - 1);
-        updateUI();
-        
-        if (gameState.timeRemaining <= 0) {
-            stopGameTimer();
-            endGame();
+
+        // Turn countdown: if time runs out, game ends
+        if (gameState.timeRemaining > 0) {
+            gameState.timeRemaining = Math.max(0, gameState.timeRemaining - 1);
+            if (gameState.timeRemaining <= 0) {
+                showTimerExpiredMessage();
+                stopTurnTimer();
+                endGame();
+                return;
+            }
         }
+
+        updateUI();
     }, 1000);
 }
 
@@ -128,7 +153,8 @@ function applyDifficultyWeight(baseWeight = 1, difficultyValue = 1) {
 
 // RTP Weights for different block types (higher weight = more likely to appear when RTP is low)
 const BLOCK_WEIGHTS = {
-    single: { base: 18, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
+    // Reduce single block frequency so the game isn't too simple
+    single: { base: 88, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
     double: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double },
     double_vertical: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double_vertical },
     I_piece: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece },
@@ -156,7 +182,15 @@ const BLOCK_WEIGHTS = {
 function initGame() {
     // Deduct the cost to play the first game
     gameState.balance -= GAME_CONFIG.GAME_COST;
-    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
+    // Track balance at the start of this round (after cost deduction)
+    gameState.roundStartBalance = gameState.balance;
+    // Reset turn timer
+    gameState.currentTurnTimeLimit = GAME_CONFIG.TURN_TIME_LIMIT;
+    gameState.timeRemaining = gameState.currentTurnTimeLimit;
+    // Reset 5-block set tracking
+    gameState.blocksPlacedInSet = 0;
+    gameState.potValue = 0;
+    gameState.goldenCells = new Set();
     
     createGrid();
     generateBlockOptions();
@@ -165,7 +199,7 @@ function initGame() {
     if (isGameOver()) {
         endGame();
     } else {
-        startGameTimer();
+        startTurnTimer();
     }
     
     updateUI();
@@ -296,26 +330,65 @@ function canPlaceBlock(shape, startRow, startCol) {
 
 // Place block on the grid
 function placeBlock(shape, startRow, startCol) {
+    const isGoldenPlacement =
+        gameState.goldenBatchActive && gameState.goldenBatchBlocksRemaining > 0;
     const color = gameState.selectedBlock.color;
-    
+    const placedCells = [];
+
     for (let r = 0; r < shape.length; r++) {
         for (let c = 0; c < shape[r].length; c++) {
             if (shape[r][c] === 1) {
                 const targetRow = startRow + r;
                 const targetCol = startCol + c;
                 gameState.grid[targetRow][targetCol] = 1;
+                placedCells.push({ row: targetRow, col: targetCol });
                 
                 const cell = document.querySelector(`[data-row="${targetRow}"][data-col="${targetCol}"]`);
                 if (cell) {
                     cell.classList.add('filled');
-                    // Apply the block's color
-                    cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
-                    cell.style.borderColor = adjustBrightness(color, 20);
-                    cell.style.boxShadow = `0 0 8px ${color}99, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+                    if (isGoldenPlacement) {
+                        // Golden visual style
+                        cell.style.background = 'linear-gradient(135deg, #ffd700, #ffa500)';
+                        cell.style.borderColor = '#ffec8b';
+                        cell.style.boxShadow =
+                            '0 0 10px rgba(255, 215, 0, 0.9), inset 0 1px 2px rgba(255, 255, 255, 0.6)';
+                    } else {
+                        // Apply the block's normal color
+                        cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
+                        cell.style.borderColor = adjustBrightness(color, 20);
+                        cell.style.boxShadow = `0 0 8px ${color}99, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+                    }
                 }
             }
         }
     }
+
+    // If this placement is golden, track it for full-clear time bonus
+    if (isGoldenPlacement && placedCells.length > 0) {
+        const bonusSeconds = 3 + Math.floor(Math.random() * 3); // 3–5 seconds
+        const cellKeys = new Set(placedCells.map(({ row, col }) => `${row}-${col}`));
+        gameState.goldenBlocks.push({
+            cells: cellKeys,
+            bonusSeconds,
+            awarded: false
+        });
+
+        gameState.goldenBatchBlocksRemaining -= 1;
+        if (gameState.goldenBatchBlocksRemaining <= 0) {
+            gameState.goldenBatchActive = false;
+            gameState.goldenBatchBlocksRemaining = 0;
+        }
+    }
+}
+
+// Trigger golden pot explosion: convert the NEXT batch of placed blocks into golden blocks
+function triggerGoldenPotExplosion() {
+    // Reset pot
+    gameState.potValue = 0;
+    // Activate golden batch: the next full batch of placed blocks becomes golden.
+    // Here we treat a "batch" as the next 5 block placements.
+    gameState.goldenBatchActive = true;
+    gameState.goldenBatchBlocksRemaining = 5;
 }
 
 // Check and clear completed lines
@@ -374,7 +447,9 @@ function clearLinesWithAnimation(linesToClear) {
             if (line.type === 'row') {
                 for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
                     gameState.grid[line.index][col] = 0;
-                    const cell = document.querySelector(`[data-row="${line.index}"][data-col="${col}"]`);
+                    const cell = document.querySelector(
+                        `[data-row="${line.index}"][data-col="${col}"]`
+                    );
                     if (cell) {
                         cell.classList.remove('filled', 'clearing');
                         // Reset all custom styles to default empty cell appearance
@@ -386,7 +461,9 @@ function clearLinesWithAnimation(linesToClear) {
             } else {
                 for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
                     gameState.grid[row][line.index] = 0;
-                    const cell = document.querySelector(`[data-row="${row}"][data-col="${line.index}"]`);
+                    const cell = document.querySelector(
+                        `[data-row="${row}"][data-col="${line.index}"]`
+                    );
                     if (cell) {
                         cell.classList.remove('filled', 'clearing');
                         // Reset all custom styles to default empty cell appearance
@@ -397,31 +474,84 @@ function clearLinesWithAnimation(linesToClear) {
                 }
             }
         });
+
+        // After rows/columns are cleared, check if any tracked golden blocks
+        // have been fully cleared from the grid and award their time bonuses.
+        checkGoldenBlocksCleared();
     }, 500);
+}
+
+// Check tracked golden blocks and award time bonus only when
+// an entire golden block (all its cells) has been cleared.
+function checkGoldenBlocksCleared() {
+    if (!gameState.goldenBlocks || gameState.goldenBlocks.length === 0) return;
+
+    const remainingBlocks = [];
+
+    for (const block of gameState.goldenBlocks) {
+        if (block.awarded) continue;
+
+        let fullyCleared = true;
+        for (const key of block.cells) {
+            const [rowStr, colStr] = key.split('-');
+            const row = parseInt(rowStr, 10);
+            const col = parseInt(colStr, 10);
+            if (gameState.grid[row][col] === 1) {
+                fullyCleared = false;
+                break;
+            }
+        }
+
+        if (fullyCleared) {
+            gameState.timeRemaining += block.bonusSeconds;
+            showTimeBonusAnimation(block.bonusSeconds);
+            block.awarded = true;
+        } else {
+            remainingBlocks.push(block);
+        }
+    }
+
+    gameState.goldenBlocks = remainingBlocks;
 }
 
 // Handle line clear payout
 function handleLineClear(clearedLines) {
-    // Multipliers removed: every line pays flat rate
-    gameState.currentMultiplier = 1;
-    gameState.consecutiveClears = 0;
+    // Increment consecutive clears when lines are completed
+    gameState.consecutiveClears += 1;
+    
+    // Calculate multiplier: starts at 1x, then 2x, 4x, 8x, 16x (max)
+    // consecutiveClears: 1 -> 1x, 2 -> 2x, 3 -> 4x, 4 -> 8x, 5+ -> 16x
+    gameState.currentMultiplier = Math.min(16, Math.pow(2, Math.max(0, gameState.consecutiveClears - 1)));
+    
     gameState.linesCleared += clearedLines;
     
     const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
-    gameState.balance += basePayout;
-    
-    const timeBonus = GAME_CONFIG.TIME_BONUS_PER_LINE * clearedLines;
-    gameState.timeRemaining += timeBonus;
-    
-    // Show payout animation
-    showPayoutAnimation(basePayout);
+    const payoutWithMultiplier = basePayout * gameState.currentMultiplier;
+    gameState.balance += payoutWithMultiplier;
+
+    // Golden pot: only increase when multiple lines are cleared at once
+    if (clearedLines > 1) {
+        gameState.potValue = Math.min(GAME_CONFIG.POT_LIMIT, gameState.potValue + clearedLines);
+    }
+
+    // If pot is full, trigger golden pot explosion
+    if (gameState.potValue >= GAME_CONFIG.POT_LIMIT) {
+        triggerGoldenPotExplosion();
+    }
+
+    // Show payout animation with multiplier info
+    showPayoutAnimation(payoutWithMultiplier, gameState.currentMultiplier);
 }
 
 // Show payout animation
-function showPayoutAnimation(amount) {
+function showPayoutAnimation(amount, multiplier = 1) {
     const animation = document.createElement('div');
     animation.className = 'payout-animation';
-    animation.textContent = `+$${amount.toFixed(2)}`;
+    if (multiplier > 1) {
+        animation.textContent = `+$${amount.toFixed(3)} (${multiplier}x)`;
+    } else {
+        animation.textContent = `+$${amount.toFixed(3)}`;
+    }
     
     document.body.appendChild(animation);
     
@@ -430,8 +560,24 @@ function showPayoutAnimation(amount) {
     }, 2000);
 }
 
+// Show a temporary "+ X seconds" animation when a golden block
+// has been fully cleared and its time bonus is awarded.
+function showTimeBonusAnimation(seconds) {
+    const animation = document.createElement('div');
+    animation.className = 'time-bonus-animation';
+    animation.textContent = `+${seconds} seconds`;
+
+    document.body.appendChild(animation);
+
+    setTimeout(() => {
+        if (animation.parentNode) {
+            animation.parentNode.removeChild(animation);
+        }
+    }, 1500);
+}
+
 // Block colors for visual distinction
-const BLOCK_COLORS = ['#ff4444', '#4444ff', '#44ff44', '#ff8800', '#ffff44']; // red, blue, green, orange, yellow
+const BLOCK_COLORS = ['#ff4444', '#4444ff', '#44ff44', '#ff8800']; // red, blue, green, orange, yellow
 
 // Generate block options using RTP algorithm
 function generateBlockOptions() {
@@ -445,7 +591,7 @@ function generateBlockOptions() {
     // Adjust weights based on RTP
     const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
     
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
         const blockType = selectWeightedBlock(rtpAdjustment);
         const blockColor = BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
         gameState.blockOptions.push({
@@ -570,12 +716,17 @@ function renderBlockOptions() {
     const container = document.getElementById('blockOptions');
     container.innerHTML = '';
     
+    // If golden batch is active, all blocks will be golden when placed
+    const goldenBatchActive = gameState.goldenBatchActive && gameState.goldenBatchBlocksRemaining > 0;
+    
     gameState.blockOptions.forEach(block => {
+        if (!block) return;
         const option = document.createElement('div');
         option.className = 'block-option';
         option.dataset.blockId = block.id;
         
-        const preview = createBlockPreview(block.shape, block.color);
+        // Show blocks as golden if golden batch is active (any block placed will be golden)
+        const preview = createBlockPreview(block.shape, block.color, goldenBatchActive);
         option.appendChild(preview);
         
         option.addEventListener('click', () => selectBlock(block));
@@ -584,7 +735,7 @@ function renderBlockOptions() {
 }
 
 // Create visual preview of block
-function createBlockPreview(shape, color) {
+function createBlockPreview(shape, color, isGolden = false) {
     const preview = document.createElement('div');
     preview.className = 'block-preview';
     preview.style.gridTemplateColumns = `repeat(${shape[0].length}, 1fr)`;
@@ -595,9 +746,17 @@ function createBlockPreview(shape, color) {
             const cell = document.createElement('div');
             if (shape[r][c] === 1) {
                 cell.className = 'block-cell';
-                cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
-                cell.style.borderColor = adjustBrightness(color, 20);
-                cell.style.boxShadow = `0 0 4px ${color}66, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+                if (isGolden) {
+                    // Golden visual style for golden batch blocks
+                    cell.style.background = 'linear-gradient(135deg, #ffd700, #ffa500)';
+                    cell.style.borderColor = '#ffec8b';
+                    cell.style.boxShadow = '0 0 6px rgba(255, 215, 0, 0.9), inset 0 1px 2px rgba(255, 255, 255, 0.6)';
+                } else {
+                    // Normal color
+                    cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
+                    cell.style.borderColor = adjustBrightness(color, 20);
+                    cell.style.boxShadow = `0 0 4px ${color}66, inset 0 1px 2px rgba(255, 255, 255, 0.3)`;
+                }
             } else {
                 cell.style.width = '20px';
                 cell.style.height = '20px';
@@ -633,34 +792,52 @@ function selectBlock(block) {
     document.querySelector(`[data-block-id="${block.id}"]`).classList.add('selected');
 }
 
-// Remove used block and generate new one
+// Remove used block and, once all 5 are used, generate a new set and decrease timer
 function removeUsedBlock() {
     if (!gameState.selectedBlock) return;
     
     const usedIndex = gameState.selectedBlock.id;
     
-    // Generate new block for the used slot
-    const totalSpent = GAME_CONFIG.GAME_COST;
-    const totalWon = gameState.balance;
-    const currentRTP = totalWon / totalSpent;
-    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
-    
-    const newBlockType = selectWeightedBlock(rtpAdjustment);
-    const newBlockColor = BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
-    gameState.blockOptions[usedIndex] = {
-        id: usedIndex,
-        type: newBlockType,
-        shape: BLOCK_SHAPES[newBlockType],
-        color: newBlockColor
-    };
-    
+    // Mark this block slot as used (empty)
+    gameState.blockOptions[usedIndex] = null;
+    gameState.blocksPlacedInSet += 1;
     gameState.selectedBlock = null;
+
+    // If all 5 blocks are placed, reset timer (minus one second) and spawn a new set
+    const remainingBlocks = gameState.blockOptions.filter(b => b !== null);
+    if (gameState.blocksPlacedInSet >= 5 || remainingBlocks.length === 0) {
+        // Decrease the per-cycle time limit by 1, down to a minimum of 0
+        gameState.currentTurnTimeLimit = Math.max(0, gameState.currentTurnTimeLimit - 1);
+        gameState.timeRemaining = gameState.currentTurnTimeLimit;
+
+        // Generate a fresh set of 5 blocks
+        const totalSpent = GAME_CONFIG.GAME_COST;
+        const totalWon = gameState.balance;
+        const currentRTP = totalWon / totalSpent;
+        const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
+
+        gameState.blockOptions = [];
+        for (let i = 0; i < 5; i++) {
+            const blockType = selectWeightedBlock(rtpAdjustment);
+            const blockColor = BLOCK_COLORS[Math.floor(Math.random() * BLOCK_COLORS.length)];
+            gameState.blockOptions.push({
+                id: i,
+                type: blockType,
+                shape: BLOCK_SHAPES[blockType],
+                color: blockColor
+            });
+        }
+
+        gameState.blocksPlacedInSet = 0;
+    }
+
     renderBlockOptions();
 }
 
 // Check if game is over (no valid moves)
 function isGameOver() {
     for (const block of gameState.blockOptions) {
+        if (!block) continue;
         for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
             for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
                 if (canPlaceBlock(block.shape, row, col)) {
@@ -675,19 +852,18 @@ function isGameOver() {
 // End the game
 function endGame() {
     if (gameState.isGameOver) {
-        stopGameTimer();
+        stopTurnTimer();
         return;
     }
     
     gameState.isGameOver = true;
-    stopGameTimer();
-    gameState.timeRemaining = 0;
+    stopTurnTimer();
     
     // Track game performance
     trackGamePerformance();
     
     document.getElementById('gameOverOverlay').style.display = 'flex';
-    document.getElementById('finalBalance').textContent = gameState.balance.toFixed(2);
+    document.getElementById('finalBalance').textContent = gameState.balance.toFixed(3);
 }
 
 // Track performance of completed game
@@ -719,7 +895,7 @@ function startNewGame() {
         return;
     }
     
-    stopGameTimer();
+    stopTurnTimer();
     
     gameState.balance -= GAME_CONFIG.GAME_COST;
     gameState.currentMultiplier = 1;
@@ -727,7 +903,15 @@ function startNewGame() {
     gameState.selectedBlock = null;
     gameState.isGameOver = false;
     gameState.consecutiveClears = 0;
-    gameState.timeRemaining = GAME_CONFIG.TURN_TIME_LIMIT;
+    gameState.roundStartBalance = gameState.balance;
+    gameState.currentTurnTimeLimit = GAME_CONFIG.TURN_TIME_LIMIT;
+    gameState.timeRemaining = gameState.currentTurnTimeLimit;
+    gameState.blocksPlacedInSet = 0;
+    gameState.potValue = 0;
+    gameState.goldenCells = new Set();
+    gameState.goldenBatchActive = false;
+    gameState.goldenBatchBlocksRemaining = 0;
+    gameState.goldenBlocks = [];
     
     document.getElementById('gameOverOverlay').style.display = 'none';
     
@@ -738,7 +922,7 @@ function startNewGame() {
     if (isGameOver()) {
         endGame();
     } else {
-        startGameTimer();
+        startTurnTimer();
     }
     
     updateUI();
@@ -746,19 +930,26 @@ function startNewGame() {
 
 // Update UI elements
 function updateUI() {
-    document.getElementById('balance').textContent = gameState.balance.toFixed(2);
+    document.getElementById('balance').textContent = gameState.balance.toFixed(3);
     document.getElementById('multiplier').textContent = gameState.currentMultiplier;
     document.getElementById('linesCleared').textContent = gameState.linesCleared;
     
+    // Timer element now shows the main turn countdown (15 → 0)
     const timerElement = document.getElementById('timer');
     if (timerElement) {
         timerElement.textContent = `${Math.max(0, Math.ceil(gameState.timeRemaining))}s`;
+    }
+
+    // Update golden pot UI
+    const potElement = document.getElementById('potValue');
+    if (potElement) {
+        potElement.textContent = `${gameState.potValue}/${GAME_CONFIG.POT_LIMIT}`;
     }
 }
 
 // Handle keyboard input
 function handleKeyPress(event) {
-    if (event.key >= '1' && event.key <= '3') {
+    if (event.key >= '1' && event.key <= '5') {
         const blockIndex = parseInt(event.key) - 1;
         if (gameState.blockOptions[blockIndex]) {
             selectBlock(gameState.blockOptions[blockIndex]);
@@ -1260,8 +1451,8 @@ function simulateGame() {
         if (clearedLines > 0) {
             handleLineClearSimulation(clearedLines);
         } else {
-            simState.consecutiveClears = 0;
-            simState.currentMultiplier = 1;
+            gameState.consecutiveClears = 0;
+            gameState.currentMultiplier = 1;
         }
         
         // Generate new block
@@ -1609,14 +1800,18 @@ function checkAndClearLinesSimulation() {
 }
 
 function handleLineClearSimulation(clearedLines) {
-    gameState.consecutiveClears = 0;
-    gameState.currentMultiplier = 1;
+    // Increment consecutive clears when lines are completed
+    gameState.consecutiveClears += 1;
+    
+    // Calculate multiplier: 2x, 4x, 8x, 16x (max)
+    // consecutiveClears: 1 -> 2x, 2 -> 4x, 3 -> 8x, 4+ -> 16x
+    gameState.currentMultiplier = Math.min(16, Math.pow(2, gameState.consecutiveClears));
+    
     gameState.linesCleared += clearedLines;
     
     const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
-    gameState.balance += basePayout;
-    const timeBonus = GAME_CONFIG.TIME_BONUS_PER_LINE * clearedLines;
-    gameState.timeRemaining += timeBonus;
+    const payoutWithMultiplier = basePayout * gameState.currentMultiplier;
+    gameState.balance += payoutWithMultiplier;
 }
 
 function removeUsedBlockSimulation(usedIndex) {
