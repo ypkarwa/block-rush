@@ -3,15 +3,15 @@ const GAME_CONFIG = {
     GRID_SIZE: 7,
     INITIAL_BALANCE: 10.00,
     GAME_COST: 1.00,
-    LINE_PAYOUT: 0.025, // $2.00 per line
-    TARGET_RTP: 0.97, // 97% return to player
+    LINE_PAYOUT: 0.0215, // $0.0215 per line (adjusted for 90% RTP)
+    TARGET_RTP: 0.90, // 90% return to player
     MAX_MULTIPLIER: 10,
     // Max win that is allowed for a single round (can be overridden by backend)
     MAX_ROUND_WIN: 10.00,
     // Turn timer configuration
     TURN_TIME_LIMIT: 15,
     // Golden pot configuration
-    POT_LIMIT: 5
+    POT_LIMIT: [5,6,7]
 };
 
 // Game State
@@ -531,11 +531,11 @@ function handleLineClear(clearedLines) {
 
     // Golden pot: only increase when multiple lines are cleared at once
     if (clearedLines > 1) {
-        gameState.potValue = Math.min(GAME_CONFIG.POT_LIMIT, gameState.potValue + clearedLines);
+        gameState.potValue = Math.min(GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)], gameState.potValue + clearedLines);
     }
 
     // If pot is full, trigger golden pot explosion
-    if (gameState.potValue >= GAME_CONFIG.POT_LIMIT) {
+    if (gameState.potValue >= GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]) {
         triggerGoldenPotExplosion();
     }
 
@@ -943,7 +943,7 @@ function updateUI() {
     // Update golden pot UI
     const potElement = document.getElementById('potValue');
     if (potElement) {
-        potElement.textContent = `${gameState.potValue}/${GAME_CONFIG.POT_LIMIT}`;
+        potElement.textContent = `${gameState.potValue}/${GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]}`;
     }
 }
 
@@ -1283,218 +1283,215 @@ function evaluateIsolatedHoles(grid) {
     return isolatedHoles;
 }
 
-// RTP Simulation functionality - DETAILED REPORT
-async function runRTPSimulation() {
-    console.log('Starting detailed RTP simulation...');
+// RTP Simulation functionality - 100 games with golden pot and RTP tracking
+function runRTPSimulation() {
+    console.log('\n========================================');
+    console.log('  BLOCK RUSH - 100 GAME RTP SIMULATION');
+    console.log('  (With Golden Pot Feature)              ');
+    console.log('========================================\n');
     
-    const simulationBtn = document.getElementById('simulationBtn');
-    const resultsDiv = document.getElementById('simulationResults');
-    const statusSpan = document.getElementById('simStatus');
-    const gamesSpan = document.getElementById('simGames');
-    const rtpSpan = document.getElementById('simRTP');
-    const linesSpan = document.getElementById('simLines');
+    const TOTAL_GAMES = 10000;
+    const COST_PER_GAME = 1.00;
     
-    if (!simulationBtn || !resultsDiv || !statusSpan || !gamesSpan || !rtpSpan || !linesSpan) {
-        console.error('Simulation UI elements not found');
-        alert('Simulation UI elements not found. Please refresh the page.');
-        return;
-    }
+    let totalWagered = 0;
+    let totalWon = 0;
+    let totalGoldenPotTriggered = 0;
+    let totalGoldenWinnings = 0;
+    const gameResults = [];
     
-    // Disable button and show results
-    simulationBtn.disabled = true;
-    simulationBtn.textContent = 'Running...';
-    resultsDiv.style.display = 'block';
-    statusSpan.textContent = 'Running';
+    console.log(`Running ${TOTAL_GAMES} games at $${COST_PER_GAME.toFixed(2)} per game...\n`);
+    console.log('Game# | Wager | Winnings | Lines | Gold | RTP (Game) | Running RTP');
+    console.log('------|-------|----------|-------|------|------------|----------');
     
-    const totalGames = 1000;
-    let totalCoinIn = 0;
-    let totalCoinOut = 0;
-    let totalLines = 0;
-    let gamesCompleted = 0;
-    
-    // DETAILED GAME REPORT
-    const gameReports = [];
-    
-    // Save current game state (deep copy)
-    const originalState = JSON.parse(JSON.stringify(gameState));
-    
-    try {
-        console.log('=== DETAILED GAME REPORT ===');
-        console.log('Game#, CoinIn, CoinOut, Lines, Multipliers, RTP%');
-        
-        // Run simulation game by game for detailed reporting
-        for (let gameNum = 1; gameNum <= totalGames; gameNum++) {
-            try {
-                const result = simulateGame();
-                
-                const coinIn = 1.00;
-                const coinOut = result.finalBalance;
-                const gameRTP = (coinOut / coinIn) * 100;
-                
-                totalCoinIn += coinIn;
-                totalCoinOut += coinOut;
-                totalLines += result.linesCleared;
-                gamesCompleted++;
-                
-                // Store detailed report
-                gameReports.push({
-                    game: gameNum,
-                    coinIn: coinIn,
-                    coinOut: coinOut,
-                    lines: result.linesCleared,
-                    moves: result.moves,
-                    rtp: gameRTP
-                });
-                
-                // Log every 100th game
-                if (gameNum % 100 === 0) {
-                    console.log(`${gameNum}, $${coinIn.toFixed(2)}, $${coinOut.toFixed(4)}, ${result.linesCleared}, ${result.moves} moves, ${gameRTP.toFixed(2)}%`);
-                    
-                    const currentRTP = (totalCoinOut / totalCoinIn) * 100;
-                    gamesSpan.textContent = gamesCompleted.toLocaleString();
-                    rtpSpan.textContent = currentRTP.toFixed(2) + '%';
-                    linesSpan.textContent = (totalLines / gamesCompleted).toFixed(1);
-                }
-                
-            } catch (gameError) {
-                console.error(`Error in game ${gameNum}:`, gameError);
-                totalCoinIn += 1.00; // Still count the wager
-                gamesCompleted++;
+    for (let gameNum = 1; gameNum <= TOTAL_GAMES; gameNum++) {
+        try {
+            const wager = COST_PER_GAME;
+            
+            // Simulate the game with golden pot tracking
+            const result = simpleGameSimulation();
+            const winnings = result.balance;
+            const goldenTriggered = result.goldenPotTriggered ? 'YES' : 'no';
+            
+            // Track totals
+            totalWagered += wager;
+            totalWon += winnings;
+            if (result.goldenPotTriggered) {
+                totalGoldenPotTriggered++;
+                totalGoldenWinnings += result.goldenPotBonus;
             }
+            
+            // Calculate RTP
+            const gameRTP = winnings > 0 ? (winnings / wager) * 100 : 0;
+            const runningRTP = totalWagered > 0 ? (totalWon / totalWagered) * 100 : 0;
+            
+            gameResults.push({
+                game: gameNum,
+                wager,
+                winnings,
+                lines: result.linesCleared,
+                goldenTriggered: result.goldenPotTriggered,
+                goldenBonus: result.goldenPotBonus,
+                rtp: gameRTP,
+                runningRTP
+            });
+            
+            // Log every game
+            console.log(
+                `${String(gameNum).padStart(5, ' ')} | $${wager.toFixed(2)} | $${winnings.toFixed(4)} | ${String(result.linesCleared).padStart(5, ' ')} | ${goldenTriggered.padEnd(4, ' ')} | ${gameRTP.toFixed(2).padStart(9, ' ')}% | ${runningRTP.toFixed(2)}%`
+            );
+        } catch (error) {
+            console.error(`✗ Error in game ${gameNum}:`, error);
+            totalWagered += COST_PER_GAME;
         }
-        
-        // Final detailed results
-        const finalRTP = (totalCoinOut / totalCoinIn) * 100;
-        const avgLines = totalLines / totalGames;
-        
-        // Debug UI values
-        console.log(`UI UPDATE: totalCoinOut=${totalCoinOut}, totalCoinIn=${totalCoinIn}, finalRTP=${finalRTP}`);
-        
-        gamesSpan.textContent = totalGames.toLocaleString();
-        rtpSpan.textContent = finalRTP.toFixed(2) + '%';
-        linesSpan.textContent = avgLines.toFixed(1);
-        statusSpan.textContent = 'Complete';
-        
-        console.log('=== FINAL SUMMARY ===');
-        console.log(`Total Games: ${totalGames}`);
-        console.log(`Total Coin In: $${totalCoinIn.toFixed(2)}`);
-        console.log(`Total Coin Out: $${totalCoinOut.toFixed(2)}`);
-        console.log(`Manual RTP Calculation: ($${totalCoinOut.toFixed(2)} / $${totalCoinIn.toFixed(2)}) * 100 = ${finalRTP.toFixed(4)}%`);
-        console.log(`Average Lines per Game: ${avgLines.toFixed(2)}`);
-        console.log(`Expected base payout: ${avgLines.toFixed(2)} lines × $${GAME_CONFIG.LINE_PAYOUT.toFixed(2)} = $${(avgLines * GAME_CONFIG.LINE_PAYOUT).toFixed(4)} per game`);
-        console.log(`Expected RTP without multipliers: ${((avgLines * GAME_CONFIG.LINE_PAYOUT) * 100).toFixed(2)}%`);
-        
-        // Sample of first 10 games
-        console.log('=== FIRST 10 GAMES SAMPLE ===');
-        gameReports.slice(0, 10).forEach(game => {
-            console.log(`Game ${game.game}: In=$${game.coinIn.toFixed(2)}, Out=$${game.coinOut.toFixed(4)}, Lines=${game.lines}, RTP=${game.rtp.toFixed(2)}%`);
-        });
-        
-    } catch (error) {
-        console.error('Simulation error:', error);
-        statusSpan.textContent = 'Error';
-    } finally {
-        // Restore original game state (deep copy)
-        Object.assign(gameState, JSON.parse(JSON.stringify(originalState)));
-        
-        // Re-enable button
-        simulationBtn.disabled = false;
-        simulationBtn.textContent = 'Run Simulation (10k games)';
     }
+    
+    // Calculate final stats
+    const finalRTP = totalWagered > 0 ? (totalWon / totalWagered) * 100 : 0;
+    const avgWinPerGame = totalWon / TOTAL_GAMES;
+    const avgLinesPerGame = gameResults.reduce((sum, g) => sum + g.lines, 0) / TOTAL_GAMES;
+    const netProfit = totalWon - totalWagered;
+    const baseWinnings = totalWon - totalGoldenWinnings;
+    const baseRTP = totalWagered > 0 ? (baseWinnings / totalWagered) * 100 : 0;
+    const goldenRTPBoost = finalRTP - baseRTP;
+    
+    // Final summary
+    console.log('\n========================================');
+    console.log('        FINAL SIMULATION SUMMARY');
+    console.log('========================================\n');
+    console.log('WAGERING STATS:');
+    console.log(`  Total Games Played:       ${TOTAL_GAMES}`);
+    console.log(`  Total Amount Wagered:     $${totalWagered.toFixed(2)}`);
+    console.log(`  Total Amount Won:         $${totalWon.toFixed(2)}`);
+    console.log(`  Net Profit/Loss:          $${netProfit.toFixed(2)}`);
+    console.log(`  Average Win per Game:     $${avgWinPerGame.toFixed(4)}`);
+    console.log(`  Average Lines per Game:   ${avgLinesPerGame.toFixed(2)}`);
+    
+    console.log('\nRTP PERFORMANCE:');
+    console.log(`  Final RTP:                ${finalRTP.toFixed(2)}%`);
+    console.log(`  Target RTP:               ${(GAME_CONFIG.TARGET_RTP * 100).toFixed(2)}%`);
+    console.log(`  RTP Variance:             ${(finalRTP - (GAME_CONFIG.TARGET_RTP * 100)).toFixed(2)}%`);
+    console.log(`  Base RTP (w/o golden):    ${baseRTP.toFixed(2)}%`);
+    console.log(`  Golden RTP Boost:         +${goldenRTPBoost.toFixed(2)}%`);
+    
+    console.log('\nGOLDEN POT STATS:');
+    console.log(`  Golden Pot Triggered:     ${totalGoldenPotTriggered}x (${((totalGoldenPotTriggered/TOTAL_GAMES)*100).toFixed(1)}% of games)`);
+    console.log(`  Golden Pot Winnings:      $${totalGoldenWinnings.toFixed(2)}`);
+    console.log(`  Avg Golden Bonus:         $${totalGoldenPotTriggered > 0 ? (totalGoldenWinnings/totalGoldenPotTriggered).toFixed(4) : '0.0000'}`);
+    
+    console.log('\n========================================\n');
+    
+    return {
+        totalGames: TOTAL_GAMES,
+        totalWagered,
+        totalWon,
+        finalRTP,
+        avgWinPerGame,
+        avgLinesPerGame,
+        netProfit,
+        goldenPotTriggered: totalGoldenPotTriggered,
+        goldenWinnings: totalGoldenWinnings,
+        gameResults
+    };
 }
 
-// Simulate a single game using AI
-function simulateGame() {
-    try {
-        // Initialize simulation game state - START WITH $1.00
-        const simState = {
-            grid: Array(GAME_CONFIG.GRID_SIZE).fill().map(() => Array(GAME_CONFIG.GRID_SIZE).fill(0)),
-            balance: 1.00, // Start each game with $1.00
-            currentMultiplier: 1,
-            linesCleared: 0,
-            consecutiveClears: 0,
-            blockOptions: [],
-            isGameOver: false,
-            selectedBlock: null,
-            autoPlay: false,
-            // Performance tracking for dynamic RTP
-            totalGamesPlayed: 0,
-            totalAmountWagered: 0,
-            totalAmountWon: 0,
-            recentPerformance: [],
-            difficultyMultiplier: 1.0
-        };
-        
-        // Temporarily override global state for simulation
-        const originalGameState = JSON.parse(JSON.stringify(gameState));
-        Object.assign(gameState, simState);
+// Simple, isolated 100-game simulation with golden pot tracking
+function simpleGameSimulation() {
+    // Create isolated game state
+    const sim = {
+        grid: Array(GAME_CONFIG.GRID_SIZE).fill().map(() => Array(GAME_CONFIG.GRID_SIZE).fill(0)),
+        balance: 0, // Start with $0 (after paying $1 to play)
+        currentMultiplier: 1,
+        linesCleared: 0,
+        consecutiveClears: 0,
+        potValue: 0, // Golden pot tracker
+        goldenBatchActive: false,
+        goldenBatchBlocksRemaining: 0,
+        goldenBlocks: [],
+        blockOptions: [],
+        moves: 0,
+        goldenPotTriggered: false,
+        goldenPotBonus: 0
+    };
     
-        // Deduct game cost - now player has $0.00 to start playing
-        gameState.balance -= GAME_CONFIG.GAME_COST;
+    // Generate initial 3 blocks
+    generateSimulationBlocks(sim);
     
-    // Generate initial blocks
-    generateBlockOptionsForSimulation();
+    const maxMoves = 1000;
     
-    let moves = 0;
-    const maxMoves = 1000; // Prevent infinite loops
-    
-    // Play until game over or max moves
-    while (!isGameOverSimulation() && moves < maxMoves) {
-        const bestMove = findBestMoveSimulation();
+    // Play game with AI
+    while (!isSimulationGameOver(sim) && sim.moves < maxMoves) {
+        const bestMove = findBestSimulationMove(sim);
         if (!bestMove) break;
         
-        // Place the block
-        placeBlockSimulation(bestMove.block.shape, bestMove.row, bestMove.col);
+        // Place block
+        placeSimulationBlock(sim, bestMove.block.shape, bestMove.row, bestMove.col);
         
-        // Check and clear lines
-        const clearedLines = checkAndClearLinesSimulation();
+        // Check lines and clear
+        const clearedLines = checkAndClearSimulationLines(sim);
         if (clearedLines > 0) {
-            handleLineClearSimulation(clearedLines);
+            sim.consecutiveClears += 1;
+            sim.currentMultiplier = Math.min(16, Math.pow(2, sim.consecutiveClears - 1));
+            const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
+            const payout = basePayout * sim.currentMultiplier;
+            sim.balance += payout;
+            sim.linesCleared += clearedLines;
+            
+            // Golden pot mechanic: accumulate for multi-line clears
+            if (clearedLines > 1) {
+                sim.potValue = Math.min(GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)], sim.potValue + clearedLines);
+                
+                // Pot full? Trigger golden batch
+                if (sim.potValue >= GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]) {
+                    sim.goldenBatchActive = true;
+                    sim.goldenBatchBlocksRemaining = 5;
+                    sim.goldenPotTriggered = true;
+                    sim.goldenPotBonus += 0.15; // Golden pot trigger bonus
+                    sim.potValue = 0; // Reset pot
+                }
+            }
+            
+            // Apply golden batch bonus if active
+            if (sim.goldenBatchActive && sim.goldenBatchBlocksRemaining > 0) {
+                const goldenBonus = payout * 0.30; // 30% bonus per golden block placement
+                sim.balance += goldenBonus;
+                sim.goldenPotBonus += goldenBonus;
+                sim.goldenBatchBlocksRemaining -= 1;
+                if (sim.goldenBatchBlocksRemaining <= 0) {
+                    sim.goldenBatchActive = false;
+                }
+            }
         } else {
-            gameState.consecutiveClears = 0;
-            gameState.currentMultiplier = 1;
+            sim.consecutiveClears = 0;
+            sim.currentMultiplier = 1;
         }
         
-        // Generate new block
-        removeUsedBlockSimulation(bestMove.block.id);
+        // Remove used block and generate new one
+        const usedIndex = bestMove.block.id;
+        const newBlockType = selectSimulationWeightedBlock(sim);
+        sim.blockOptions[usedIndex] = {
+            id: usedIndex,
+            type: newBlockType,
+            shape: BLOCK_SHAPES[newBlockType]
+        };
         
-        moves++;
+        sim.moves++;
     }
     
-    // Final balance is what the player ends with (after paying $1 to play)
-    const finalBalance = gameState.balance;
-    const linesCleared = gameState.linesCleared;
-    
-    // Restore original game state
-    Object.assign(gameState, originalGameState);
-    
-        return {
-            finalBalance: finalBalance, // This is the money the player ends with
-            linesCleared: linesCleared,
-            moves: moves
-        };
-    } catch (error) {
-        console.error('Error in simulateGame:', error);
-        // Return default values on error
-        return {
-            finalBalance: 0,
-            linesCleared: 0,
-            moves: 0
-        };
-    }
+    return {
+        balance: sim.balance,
+        linesCleared: sim.linesCleared,
+        moves: sim.moves,
+        goldenPotTriggered: sim.goldenPotTriggered,
+        goldenPotBonus: sim.goldenPotBonus
+    };
 }
 
-// Simulation helper functions (simplified versions without DOM manipulation)
-function generateBlockOptionsForSimulation() {
-    gameState.blockOptions = [];
-    const totalSpent = GAME_CONFIG.GAME_COST;
-    const totalWon = gameState.balance;
-    const currentRTP = totalWon / totalSpent;
-    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
-    
+// Generate initial blocks for simulation
+function generateSimulationBlocks(sim) {
+    sim.blockOptions = [];
     for (let i = 0; i < 3; i++) {
-        const blockType = selectWeightedBlock(rtpAdjustment);
-        gameState.blockOptions.push({
+        const blockType = selectSimulationWeightedBlock(sim);
+        sim.blockOptions.push({
             id: i,
             type: blockType,
             shape: BLOCK_SHAPES[blockType]
@@ -1502,11 +1499,43 @@ function generateBlockOptionsForSimulation() {
     }
 }
 
-function isGameOverSimulation() {
-    for (const block of gameState.blockOptions) {
+// Select weighted block for simulation
+function selectSimulationWeightedBlock(sim) {
+    const weights = {};
+    let totalWeight = 0;
+    
+    Object.keys(BLOCK_SHAPES).forEach(blockType => {
+        const config = BLOCK_WEIGHTS[blockType];
+        const difficulty = config ? config.difficulty : 1;
+        let weight = config ? config.base : 1;
+        
+        // Simple weight adjustment
+        weight *= (1 + difficulty * 0.1);
+        
+        weights[blockType] = Math.max(weight, 0.1);
+        totalWeight += weights[blockType];
+    });
+    
+    const random = Math.random() * totalWeight;
+    let currentWeight = 0;
+    
+    for (const [blockType, weight] of Object.entries(weights)) {
+        currentWeight += weight;
+        if (random <= currentWeight) {
+            return blockType;
+        }
+    }
+    
+    return 'single';
+}
+
+// Check if simulation game is over
+function isSimulationGameOver(sim) {
+    for (const block of sim.blockOptions) {
+        if (!block) continue;
         for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
             for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-                if (canPlaceBlockOnGrid(block.shape, row, col, gameState.grid)) {
+                if (canPlaceSimulationBlock(sim, block.shape, row, col)) {
                     return false;
                 }
             }
@@ -1515,19 +1544,20 @@ function isGameOverSimulation() {
     return true;
 }
 
-function findBestMoveSimulation() {
+// Find best move for simulation
+function findBestSimulationMove(sim) {
     let bestScore = -Infinity;
     let bestMove = null;
     
-    // Evaluate all possible moves for all blocks using the same advanced AI
-    for (const block of gameState.blockOptions) {
+    for (const block of sim.blockOptions) {
+        if (!block) continue;
         for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
             for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-                if (canPlaceBlockOnGrid(block.shape, row, col, gameState.grid)) {
-                    const score = evaluateMoveForSimulation(block.shape, row, col, block);
+                if (canPlaceSimulationBlock(sim, block.shape, row, col)) {
+                    const score = evaluateSimulationMove(sim, block.shape, row, col);
                     if (score > bestScore) {
                         bestScore = score;
-                        bestMove = { block, row, col, score };
+                        bestMove = { block, row, col };
                     }
                 }
             }
@@ -1537,13 +1567,12 @@ function findBestMoveSimulation() {
     return bestMove;
 }
 
-// Advanced move evaluation for simulation (same logic as main game)
-function evaluateMoveForSimulation(shape, startRow, startCol, block) {
-    // Create temporary grid
-    const tempGrid = gameState.grid.map(row => [...row]);
-    
-    // Place block on temp grid
+// Evaluate move for simulation
+function evaluateSimulationMove(sim, shape, startRow, startCol) {
+    const tempGrid = sim.grid.map(row => [...row]);
     const placedCells = [];
+    
+    // Place on temp grid
     for (let r = 0; r < shape.length; r++) {
         for (let c = 0; c < shape[r].length; c++) {
             if (shape[r][c] === 1) {
@@ -1555,278 +1584,139 @@ function evaluateMoveForSimulation(shape, startRow, startCol, block) {
     
     let score = 0;
     
-    // 1. IMMEDIATE LINE COMPLETION (Highest Priority)
-    const completedLines = countCompletedLines(tempGrid);
-    score += completedLines * 1000; // Very high reward for completing lines
+    // Priority 1: Complete lines
+    const completedLines = countSimulationCompletedLines(tempGrid);
+    score += completedLines * 1000;
     
-    // 2. NEAR-COMPLETION BONUS (Lines close to being completed)
-    score += evaluateNearCompletionsForSim(tempGrid) * 100;
-    
-    // 3. STRATEGIC POSITIONING
-    score += evaluateStrategicPositioningForSim(tempGrid, placedCells) * 50;
-    
-    // 4. SPACE EFFICIENCY (Avoid creating unreachable holes)
-    score += evaluateSpaceEfficiencyForSim(tempGrid, placedCells) * 30;
-    
-    // 5. FUTURE MOVE POTENTIAL (Keep options open)
-    score += evaluateFuturePotentialForSim(tempGrid, block) * 20;
-    
-    // 6. EDGE AND CORNER PREFERENCE (Better for line completion)
-    score += evaluateEdgeCornerBonusForSim(placedCells) * 15;
-    
-    // 7. DENSITY OPTIMIZATION (Fill gaps efficiently)
-    score += evaluateDensityOptimizationForSim(tempGrid, placedCells) * 25;
-    
-    // 8. AVOID CREATING ISOLATED HOLES
-    score -= evaluateIsolatedHolesForSim(tempGrid) * 200;
-    
-    return score;
-}
-
-// Simulation versions of evaluation functions
-function evaluateNearCompletionsForSim(grid) {
-    let score = 0;
-    
-    // Check rows
+    // Priority 2: Nearly complete lines
     for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-        const filledCells = grid[row].filter(cell => cell === 1).length;
-        if (filledCells >= 6) score += (filledCells - 5) * 2;
+        const filled = tempGrid[row].filter(c => c === 1).length;
+        if (filled >= 6) score += (filled - 5) * 100;
     }
-    
-    // Check columns
     for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-        let filledCells = 0;
+        let filled = 0;
         for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-            if (grid[row][col] === 1) filledCells++;
+            if (tempGrid[row][col] === 1) filled++;
         }
-        if (filledCells >= 6) score += (filledCells - 5) * 2;
+        if (filled >= 6) score += (filled - 5) * 100;
     }
     
-    return score;
-}
-
-function evaluateStrategicPositioningForSim(grid, placedCells) {
-    let score = 0;
-    
+    // Priority 3: Connect to existing blocks
     for (const cell of placedCells) {
-        let adjacentFilled = 0;
-        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-        
-        for (const [dr, dc] of directions) {
-            const newRow = cell.row + dr;
-            const newCol = cell.col + dc;
-            
-            if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
-                newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
-                grid[newRow][newCol] === 1) {
-                adjacentFilled++;
+        let adjacent = 0;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+            const nr = cell.row + dr;
+            const nc = cell.col + dc;
+            if (nr >= 0 && nr < GAME_CONFIG.GRID_SIZE && nc >= 0 && nc < GAME_CONFIG.GRID_SIZE && tempGrid[nr][nc] === 1) {
+                adjacent++;
             }
         }
-        
-        score += adjacentFilled;
+        score += adjacent * 50;
     }
     
-    return score;
-}
-
-function evaluateSpaceEfficiencyForSim(grid, placedCells) {
-    let score = 0;
-    
-    for (const cell of placedCells) {
-        const surroundingEmpty = countSurroundingEmptyForSim(grid, cell.row, cell.col);
-        if (surroundingEmpty <= 2) score += 3;
-    }
-    
-    return score;
-}
-
-function countSurroundingEmptyForSim(grid, row, col) {
-    let emptyCount = 0;
-    const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-    
-    for (const [dr, dc] of directions) {
-        const newRow = row + dr;
-        const newCol = col + dc;
-        
-        if (newRow >= 0 && newRow < GAME_CONFIG.GRID_SIZE && 
-            newCol >= 0 && newCol < GAME_CONFIG.GRID_SIZE && 
-            grid[newRow][newCol] === 0) {
-            emptyCount++;
-        }
-    }
-    
-    return emptyCount;
-}
-
-function evaluateFuturePotentialForSim(grid, currentBlock) {
-    let score = 0;
-    
-    const remainingBlocks = gameState.blockOptions.filter(b => b.id !== currentBlock.id);
-    
-    for (const block of remainingBlocks) {
-        let possiblePlacements = 0;
-        
-        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-                if (canPlaceBlockOnGrid(block.shape, row, col, grid)) {
-                    possiblePlacements++;
-                }
-            }
-        }
-        
-        score += Math.min(possiblePlacements, 10);
-    }
-    
-    return score;
-}
-
-function evaluateEdgeCornerBonusForSim(placedCells) {
-    let score = 0;
-    
-    for (const cell of placedCells) {
-        // Corner bonus
-        if ((cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1) && 
-            (cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1)) {
-            score += 2;
-        }
-        // Edge bonus
-        else if (cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1 || 
-                 cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1) {
-            score += 1;
-        }
-    }
-    
-    return score;
-}
-
-function evaluateDensityOptimizationForSim(grid, placedCells) {
-    let score = 0;
-    
-    for (const cell of placedCells) {
-        let localDensity = 0;
-        
-        for (let dr = -1; dr <= 1; dr++) {
-            for (let dc = -1; dc <= 1; dc++) {
-                const checkRow = cell.row + dr;
-                const checkCol = cell.col + dc;
-                
-                if (checkRow >= 0 && checkRow < GAME_CONFIG.GRID_SIZE && 
-                    checkCol >= 0 && checkCol < GAME_CONFIG.GRID_SIZE && 
-                    grid[checkRow][checkCol] === 1) {
-                    localDensity++;
-                }
-            }
-        }
-        
-        score += localDensity;
-    }
-    
-    return score;
-}
-
-function evaluateIsolatedHolesForSim(grid) {
-    let isolatedHoles = 0;
-    
+    // Priority 4: Avoid isolated holes
+    let isolated = 0;
     for (let row = 1; row < GAME_CONFIG.GRID_SIZE - 1; row++) {
         for (let col = 1; col < GAME_CONFIG.GRID_SIZE - 1; col++) {
-            if (grid[row][col] === 0) {
-                let surroundedCount = 0;
-                const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-                
-                for (const [dr, dc] of directions) {
-                    if (grid[row + dr][col + dc] === 1) {
-                        surroundedCount++;
-                    }
+            if (tempGrid[row][col] === 0) {
+                let surrounded = 0;
+                for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+                    if (tempGrid[row + dr][col + dc] === 1) surrounded++;
                 }
-                
-                if (surroundedCount >= 3) {
-                    isolatedHoles++;
-                }
+                if (surrounded >= 3) isolated++;
             }
         }
     }
+    score -= isolated * 200;
     
-    return isolatedHoles;
+    return score;
 }
 
-function placeBlockSimulation(shape, startRow, startCol) {
-    for (let r = 0; r < shape.length; r++) {
-        for (let c = 0; c < shape[r].length; c++) {
-            if (shape[r][c] === 1) {
-                gameState.grid[startRow + r][startCol + c] = 1;
-            }
-        }
-    }
-}
-
-function checkAndClearLinesSimulation() {
-    const linesToClear = [];
-    
-    // Check horizontal lines
+// Count completed lines in simulation
+function countSimulationCompletedLines(grid) {
+    let count = 0;
     for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-        if (gameState.grid[row].every(cell => cell === 1)) {
-            linesToClear.push({ type: 'row', index: row });
-        }
+        if (grid[row].every(c => c === 1)) count++;
     }
-    
-    // Check vertical lines
     for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-        let isComplete = true;
+        let complete = true;
         for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-            if (gameState.grid[row][col] !== 1) {
-                isComplete = false;
+            if (grid[row][col] !== 1) {
+                complete = false;
                 break;
             }
         }
-        if (isComplete) {
-            linesToClear.push({ type: 'col', index: col });
+        if (complete) count++;
+    }
+    return count;
+}
+
+// Can place block in simulation
+function canPlaceSimulationBlock(sim, shape, startRow, startCol) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = startRow + r;
+                const targetCol = startCol + c;
+                if (targetRow < 0 || targetRow >= GAME_CONFIG.GRID_SIZE || targetCol < 0 || targetCol >= GAME_CONFIG.GRID_SIZE || sim.grid[targetRow][targetCol] === 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Place block in simulation
+function placeSimulationBlock(sim, shape, startRow, startCol) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                sim.grid[startRow + r][startCol + c] = 1;
+            }
+        }
+    }
+}
+
+// Check and clear lines in simulation
+function checkAndClearSimulationLines(sim) {
+    const toClear = [];
+    
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        if (sim.grid[row].every(c => c === 1)) {
+            toClear.push({ type: 'row', index: row });
         }
     }
     
-    // Clear the lines
-    linesToClear.forEach(line => {
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let complete = true;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (sim.grid[row][col] !== 1) {
+                complete = false;
+                break;
+            }
+        }
+        if (complete) {
+            toClear.push({ type: 'col', index: col });
+        }
+    }
+    
+    // Clear lines
+    for (const line of toClear) {
         if (line.type === 'row') {
             for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
-                gameState.grid[line.index][col] = 0;
+                sim.grid[line.index][col] = 0;
             }
         } else {
             for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
-                gameState.grid[row][line.index] = 0;
+                sim.grid[row][line.index] = 0;
             }
         }
-    });
+    }
     
-    return linesToClear.length;
+    return toClear.length;
 }
 
-function handleLineClearSimulation(clearedLines) {
-    // Increment consecutive clears when lines are completed
-    gameState.consecutiveClears += 1;
-    
-    // Calculate multiplier: 2x, 4x, 8x, 16x (max)
-    // consecutiveClears: 1 -> 2x, 2 -> 4x, 3 -> 8x, 4+ -> 16x
-    gameState.currentMultiplier = Math.min(16, Math.pow(2, gameState.consecutiveClears));
-    
-    gameState.linesCleared += clearedLines;
-    
-    const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
-    const payoutWithMultiplier = basePayout * gameState.currentMultiplier;
-    gameState.balance += payoutWithMultiplier;
-}
-
-function removeUsedBlockSimulation(usedIndex) {
-    const totalSpent = GAME_CONFIG.GAME_COST;
-    const totalWon = gameState.balance;
-    const currentRTP = totalWon / totalSpent;
-    const rtpAdjustment = GAME_CONFIG.TARGET_RTP - currentRTP;
-    
-    const newBlockType = selectWeightedBlock(rtpAdjustment);
-    gameState.blockOptions[usedIndex] = {
-        id: usedIndex,
-        type: newBlockType,
-        shape: BLOCK_SHAPES[newBlockType]
-    };
-}
 
 // Initialize game when page loads
 document.addEventListener('DOMContentLoaded', initGame);
