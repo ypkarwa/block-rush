@@ -353,7 +353,112 @@ body {
     text-shadow: 0 0 3px rgba(0, 255, 255, 0.4);
 }
 
-/* Responsive Design */
+/* Bot Difficulty Controls */
+.bot-difficulty-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin: 15px 0;
+    padding: 15px;
+    background: rgba(0, 20, 40, 0.6);
+    border: 1px solid #0099cc;
+    border-radius: 8px;
+}
+
+.bot-difficulty-controls label {
+    font-size: 0.95em;
+    color: #00ffff;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-align: center;
+}
+
+.bot-difficulty-controls {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr 1fr;
+    gap: 10px;
+    align-items: center;
+    margin: 15px 0;
+    padding: 12px;
+    background: rgba(0, 20, 40, 0.6);
+    border: 1px solid #0099cc;
+    border-radius: 8px;
+}
+
+.difficulty-btn {
+    background: linear-gradient(135deg, #444, #333);
+    color: #fff;
+    border: 2px solid #666;
+    padding: 10px 15px;
+    border-radius: 6px;
+    font-size: 0.95em;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.difficulty-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+}
+
+.difficulty-btn.easy-btn {
+    border-color: #00ff00;
+    color: #00ff00;
+}
+
+.difficulty-btn.easy-btn:hover {
+    background: linear-gradient(135deg, #00ff00, #00cc00);
+    color: #000;
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.6);
+}
+
+.difficulty-btn.medium-btn {
+    border-color: #ffff00;
+    color: #ffff00;
+}
+
+.difficulty-btn.medium-btn:hover {
+    background: linear-gradient(135deg, #ffff00, #ffcc00);
+    color: #000;
+    box-shadow: 0 0 15px rgba(255, 255, 0, 0.6);
+}
+
+.difficulty-btn.hard-btn {
+    border-color: #ff0000;
+    color: #ff0000;
+}
+
+.difficulty-btn.hard-btn:hover {
+    background: linear-gradient(135deg, #ff0000, #cc0000);
+    color: #fff;
+    box-shadow: 0 0 15px rgba(255, 0, 0, 0.6);
+}
+
+/* Simulation Difficulty Controls */
+.simulation-difficulty-controls {
+    display: grid;
+    grid-template-columns: auto 1fr 1fr 1fr;
+    gap: 10px;
+    align-items: center;
+    margin: 15px 0;
+    padding: 12px;
+    background: rgba(0, 20, 40, 0.6);
+    border: 1px solid #0099cc;
+    border-radius: 8px;
+}
+
+.simulation-difficulty-controls label {
+    font-size: 0.95em;
+    color: #00ffff;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-align: center;
+}
 @media (max-width: 768px) {
     .game-container {
         padding: 20px;

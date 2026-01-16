@@ -3,15 +3,15 @@ const GAME_CONFIG = {
     GRID_SIZE: 7,
     INITIAL_BALANCE: 10.00,
     GAME_COST: 1.00,
-    LINE_PAYOUT: 0.0215, // $0.0215 per line (adjusted for 90% RTP)
-    TARGET_RTP: 0.90, // 90% return to player
+    LINE_PAYOUT: 0.0145, // $0.0145 per line (adjusted for 80% RTP without golden pot - max skilled player can reach ~55 blocks)
+    TARGET_RTP: 0.80, // 80% return to player (adjusted for realistic skilled player maximum)
     MAX_MULTIPLIER: 10,
     // Max win that is allowed for a single round (can be overridden by backend)
     MAX_ROUND_WIN: 10.00,
     // Turn timer configuration
     TURN_TIME_LIMIT: 15,
-    // Golden pot configuration
-    POT_LIMIT: [5,6,7]
+    // Maximum blocks a player can place (based on 15s to 5s game speed = ~55 blocks)
+    MAX_BLOCKS_PER_GAME: 55
 };
 
 // Game State
@@ -24,6 +24,7 @@ let gameState = {
     blockOptions: [],
     isGameOver: false,
     autoPlay: false,
+    botDifficulty: null, // 'easy', 'medium', 'hard', or null for manual
     consecutiveClears: 0,
     // Performance tracking for dynamic RTP
     totalGamesPlayed: 0,
@@ -38,14 +39,56 @@ let gameState = {
     // Round tracking (balance at the start of the round after cost is deducted)
     roundStartBalance: GAME_CONFIG.INITIAL_BALANCE,
     // Block set tracking (5-block cycles)
-    blocksPlacedInSet: 0,
-    // Golden pot
-    potValue: 0,
-    goldenCells: new Set(),
-    // Golden block batch + tracking
-    goldenBatchActive: false,
-    goldenBatchBlocksRemaining: 0,
-    goldenBlocks: []
+    blocksPlacedInSet: 0
+};
+
+// Bot Difficulty Configuration
+const BOT_DIFFICULTY_CONFIG = {
+    easy: {
+        name: 'Easy',
+        scoreWeights: {
+            lineCompletion: 800,  // Lower priority on perfect lines
+            nearCompletion: 40,
+            strategicPositioning: 15,
+            spaceEfficiency: 10,
+            futurePotential: 5,
+            edgeCornerBonus: 5,
+            densityOptimization: 5,
+            isolatedHoles: -50
+        },
+        randomness: 0.3, // 30% chance to make a random move
+        reactionTime: 1500 // milliseconds between moves
+    },
+    medium: {
+        name: 'Medium',
+        scoreWeights: {
+            lineCompletion: 1000,
+            nearCompletion: 100,
+            strategicPositioning: 50,
+            spaceEfficiency: 30,
+            futurePotential: 20,
+            edgeCornerBonus: 15,
+            densityOptimization: 25,
+            isolatedHoles: -200
+        },
+        randomness: 0.1, // 10% chance to make a suboptimal move
+        reactionTime: 800
+    },
+    hard: {
+        name: 'Hard',
+        scoreWeights: {
+            lineCompletion: 1000,
+            nearCompletion: 100,
+            strategicPositioning: 50,
+            spaceEfficiency: 30,
+            futurePotential: 20,
+            edgeCornerBonus: 15,
+            densityOptimization: 25,
+            isolatedHoles: -200
+        },
+        randomness: 0.02, // 2% chance to make a random move (almost perfect play)
+        reactionTime: 500 // Faster moves
+    }
 };
 
 function stopTurnTimer() {
@@ -154,7 +197,7 @@ function applyDifficultyWeight(baseWeight = 1, difficultyValue = 1) {
 // RTP Weights for different block types (higher weight = more likely to appear when RTP is low)
 const BLOCK_WEIGHTS = {
     // Reduce single block frequency so the game isn't too simple
-    single: { base: 88, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
+    single: { base: 30, rtp_factor: 0.3, difficulty: BLOCK_DIFFICULTY.single },
     double: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double },
     double_vertical: { base: 16, rtp_factor: 0.4, difficulty: BLOCK_DIFFICULTY.double_vertical },
     I_piece: { base: 9, rtp_factor: 1.2, difficulty: BLOCK_DIFFICULTY.I_piece },
@@ -189,8 +232,6 @@ function initGame() {
     gameState.timeRemaining = gameState.currentTurnTimeLimit;
     // Reset 5-block set tracking
     gameState.blocksPlacedInSet = 0;
-    gameState.potValue = 0;
-    gameState.goldenCells = new Set();
     
     createGrid();
     generateBlockOptions();
@@ -330,8 +371,6 @@ function canPlaceBlock(shape, startRow, startCol) {
 
 // Place block on the grid
 function placeBlock(shape, startRow, startCol) {
-    const isGoldenPlacement =
-        gameState.goldenBatchActive && gameState.goldenBatchBlocksRemaining > 0;
     const color = gameState.selectedBlock.color;
     const placedCells = [];
 
@@ -346,12 +385,6 @@ function placeBlock(shape, startRow, startCol) {
                 const cell = document.querySelector(`[data-row="${targetRow}"][data-col="${targetCol}"]`);
                 if (cell) {
                     cell.classList.add('filled');
-                    if (isGoldenPlacement) {
-                        // Golden visual style
-                        cell.style.background = 'linear-gradient(135deg, #ffd700, #ffa500)';
-                        cell.style.borderColor = '#ffec8b';
-                        cell.style.boxShadow =
-                            '0 0 10px rgba(255, 215, 0, 0.9), inset 0 1px 2px rgba(255, 255, 255, 0.6)';
                     } else {
                         // Apply the block's normal color
                         cell.style.background = `linear-gradient(135deg, ${color}, ${adjustBrightness(color, -20)})`;
@@ -363,33 +396,6 @@ function placeBlock(shape, startRow, startCol) {
         }
     }
 
-    // If this placement is golden, track it for full-clear time bonus
-    if (isGoldenPlacement && placedCells.length > 0) {
-        const bonusSeconds = 3 + Math.floor(Math.random() * 3); // 3–5 seconds
-        const cellKeys = new Set(placedCells.map(({ row, col }) => `${row}-${col}`));
-        gameState.goldenBlocks.push({
-            cells: cellKeys,
-            bonusSeconds,
-            awarded: false
-        });
-
-        gameState.goldenBatchBlocksRemaining -= 1;
-        if (gameState.goldenBatchBlocksRemaining <= 0) {
-            gameState.goldenBatchActive = false;
-            gameState.goldenBatchBlocksRemaining = 0;
-        }
-    }
-}
-
-// Trigger golden pot explosion: convert the NEXT batch of placed blocks into golden blocks
-function triggerGoldenPotExplosion() {
-    // Reset pot
-    gameState.potValue = 0;
-    // Activate golden batch: the next full batch of placed blocks becomes golden.
-    // Here we treat a "batch" as the next 5 block placements.
-    gameState.goldenBatchActive = true;
-    gameState.goldenBatchBlocksRemaining = 5;
-}
 
 // Check and clear completed lines
 function checkAndClearLines() {
@@ -488,29 +494,6 @@ function checkGoldenBlocksCleared() {
 
     const remainingBlocks = [];
 
-    for (const block of gameState.goldenBlocks) {
-        if (block.awarded) continue;
-
-        let fullyCleared = true;
-        for (const key of block.cells) {
-            const [rowStr, colStr] = key.split('-');
-            const row = parseInt(rowStr, 10);
-            const col = parseInt(colStr, 10);
-            if (gameState.grid[row][col] === 1) {
-                fullyCleared = false;
-                break;
-            }
-        }
-
-        if (fullyCleared) {
-            gameState.timeRemaining += block.bonusSeconds;
-            showTimeBonusAnimation(block.bonusSeconds);
-            block.awarded = true;
-        } else {
-            remainingBlocks.push(block);
-        }
-    }
-
     gameState.goldenBlocks = remainingBlocks;
 }
 
@@ -528,16 +511,6 @@ function handleLineClear(clearedLines) {
     const basePayout = GAME_CONFIG.LINE_PAYOUT * clearedLines;
     const payoutWithMultiplier = basePayout * gameState.currentMultiplier;
     gameState.balance += payoutWithMultiplier;
-
-    // Golden pot: only increase when multiple lines are cleared at once
-    if (clearedLines > 1) {
-        gameState.potValue = Math.min(GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)], gameState.potValue + clearedLines);
-    }
-
-    // If pot is full, trigger golden pot explosion
-    if (gameState.potValue >= GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]) {
-        triggerGoldenPotExplosion();
-    }
 
     // Show payout animation with multiplier info
     showPayoutAnimation(payoutWithMultiplier, gameState.currentMultiplier);
@@ -716,17 +689,13 @@ function renderBlockOptions() {
     const container = document.getElementById('blockOptions');
     container.innerHTML = '';
     
-    // If golden batch is active, all blocks will be golden when placed
-    const goldenBatchActive = gameState.goldenBatchActive && gameState.goldenBatchBlocksRemaining > 0;
-    
     gameState.blockOptions.forEach(block => {
         if (!block) return;
         const option = document.createElement('div');
         option.className = 'block-option';
         option.dataset.blockId = block.id;
         
-        // Show blocks as golden if golden batch is active (any block placed will be golden)
-        const preview = createBlockPreview(block.shape, block.color, goldenBatchActive);
+        const preview = createBlockPreview(block.shape, block.color, false);
         option.appendChild(preview);
         
         option.addEventListener('click', () => selectBlock(block));
@@ -907,11 +876,6 @@ function startNewGame() {
     gameState.currentTurnTimeLimit = GAME_CONFIG.TURN_TIME_LIMIT;
     gameState.timeRemaining = gameState.currentTurnTimeLimit;
     gameState.blocksPlacedInSet = 0;
-    gameState.potValue = 0;
-    gameState.goldenCells = new Set();
-    gameState.goldenBatchActive = false;
-    gameState.goldenBatchBlocksRemaining = 0;
-    gameState.goldenBlocks = [];
     
     document.getElementById('gameOverOverlay').style.display = 'none';
     
@@ -939,12 +903,6 @@ function updateUI() {
     if (timerElement) {
         timerElement.textContent = `${Math.max(0, Math.ceil(gameState.timeRemaining))}s`;
     }
-
-    // Update golden pot UI
-    const potElement = document.getElementById('potValue');
-    if (potElement) {
-        potElement.textContent = `${gameState.potValue}/${GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]}`;
-    }
 }
 
 // Handle keyboard input
@@ -958,17 +916,32 @@ function handleKeyPress(event) {
 }
 
 // Auto play functionality
-function toggleAutoPlay() {
+function toggleAutoPlay(difficulty = null) {
     gameState.autoPlay = !gameState.autoPlay;
+    gameState.botDifficulty = difficulty;
     const btn = document.getElementById('autoPlayBtn');
     
     if (gameState.autoPlay) {
-        btn.textContent = 'Stop Auto';
+        const difficultyName = difficulty ? BOT_DIFFICULTY_CONFIG[difficulty].name : 'Manual';
+        btn.textContent = `Stop ${difficultyName}`;
         btn.classList.add('active');
         autoPlayLoop();
     } else {
         btn.textContent = 'Auto Play';
         btn.classList.remove('active');
+        gameState.botDifficulty = null;
+    }
+}
+
+// Start bot with specific difficulty
+function startBotDifficulty(difficulty) {
+    if (!gameState.autoPlay || gameState.botDifficulty !== difficulty) {
+        gameState.botDifficulty = difficulty;
+        gameState.autoPlay = true;
+        const btn = document.getElementById('autoPlayBtn');
+        btn.textContent = `Stop ${BOT_DIFFICULTY_CONFIG[difficulty].name}`;
+        btn.classList.add('active');
+        autoPlayLoop();
     }
 }
 
@@ -976,19 +949,63 @@ function toggleAutoPlay() {
 function autoPlayLoop() {
     if (!gameState.autoPlay || gameState.isGameOver) return;
     
-    // Simple AI: try to place blocks that complete lines
-    let bestMove = findBestMove();
+    // Get difficulty config
+    const difficulty = gameState.botDifficulty || 'medium';
+    const config = BOT_DIFFICULTY_CONFIG[difficulty];
+    
+    // AI: try to place blocks that complete lines
+    let bestMove = findBestMoveWithDifficulty(difficulty);
     
     if (bestMove) {
         selectBlock(bestMove.block);
+        const reactionTime = config.reactionTime || 1000;
         setTimeout(() => {
-            handleCellClick(bestMove.row, bestMove.col);
-            setTimeout(autoPlayLoop, 1000);
-        }, 500);
+            if (gameState.autoPlay) {
+                handleCellClick(bestMove.row, bestMove.col);
+            }
+            setTimeout(autoPlayLoop, reactionTime);
+        }, 300);
     } else {
         gameState.autoPlay = false;
-        toggleAutoPlay();
+        gameState.botDifficulty = null;
+        const btn = document.getElementById('autoPlayBtn');
+        if (btn) {
+            btn.textContent = 'Auto Play';
+            btn.classList.remove('active');
+        }
     }
+}
+
+// Advanced AI: Find best move for auto play with difficulty
+function findBestMoveWithDifficulty(difficulty) {
+    const config = BOT_DIFFICULTY_CONFIG[difficulty] || BOT_DIFFICULTY_CONFIG.medium;
+    let allMoves = [];
+    
+    // Evaluate all possible moves for all blocks
+    for (const block of gameState.blockOptions) {
+        if (!block) continue; // Skip null blocks
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceBlock(block.shape, row, col)) {
+                    const score = evaluateMoveWithDifficulty(block.shape, row, col, block, config.scoreWeights);
+                    allMoves.push({ block, row, col, score });
+                }
+            }
+        }
+    }
+    
+    if (allMoves.length === 0) return null;
+    
+    // Sort by score
+    allMoves.sort((a, b) => b.score - a.score);
+    
+    // Apply randomness based on difficulty
+    if (Math.random() < config.randomness) {
+        // Make a random move instead of best move
+        return allMoves[Math.floor(Math.random() * allMoves.length)];
+    }
+    
+    return allMoves[0];
 }
 
 // Advanced AI: Find best move for auto play
@@ -1012,6 +1029,39 @@ function findBestMove() {
     }
     
     return bestMove;
+}
+
+// Advanced move evaluation with difficulty-specific weights
+function evaluateMoveWithDifficulty(shape, startRow, startCol, block, weights) {
+    // Create temporary grid
+    const tempGrid = gameState.grid.map(row => [...row]);
+    
+    // Place block on temp grid
+    const placedCells = [];
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                tempGrid[startRow + r][startCol + c] = 1;
+                placedCells.push({ row: startRow + r, col: startCol + c });
+            }
+        }
+    }
+    
+    let score = 0;
+    
+    // Apply weighted scoring based on difficulty
+    const completedLines = countCompletedLines(tempGrid);
+    score += completedLines * (weights.lineCompletion || 1000);
+    
+    score += evaluateNearCompletions(tempGrid) * (weights.nearCompletion || 100);
+    score += evaluateStrategicPositioning(tempGrid, placedCells) * (weights.strategicPositioning || 50);
+    score += evaluateSpaceEfficiency(tempGrid, placedCells) * (weights.spaceEfficiency || 30);
+    score += evaluateFuturePotential(tempGrid, block) * (weights.futurePotential || 20);
+    score += evaluateEdgeCornerBonus(placedCells) * (weights.edgeCornerBonus || 15);
+    score += evaluateDensityOptimization(tempGrid, placedCells) * (weights.densityOptimization || 25);
+    score -= evaluateIsolatedHoles(tempGrid) * (Math.abs(weights.isolatedHoles) || 200);
+    
+    return score;
 }
 
 // Advanced move evaluation with multiple strategic factors
@@ -1170,8 +1220,11 @@ function countSurroundingEmpty(grid, row, col) {
 function evaluateFuturePotential(grid, currentBlock) {
     let score = 0;
     
+    // Handle null currentBlock
+    if (!currentBlock) return score;
+    
     // Simulate remaining blocks and count possible placements
-    const remainingBlocks = gameState.blockOptions.filter(b => b.id !== currentBlock.id);
+    const remainingBlocks = gameState.blockOptions.filter(b => b && b.id !== currentBlock.id);
     
     for (const block of remainingBlocks) {
         let possiblePlacements = 0;
@@ -1283,42 +1336,57 @@ function evaluateIsolatedHoles(grid) {
     return isolatedHoles;
 }
 
-// RTP Simulation functionality - 100 games with golden pot and RTP tracking
-function runRTPSimulation() {
+// Global simulation control
+let simulationRunning = false;
+
+// RTP Simulation functionality - 1000 games with golden pot and RTP tracking
+function runRTPSimulation(difficulty = null) {
+    // If simulation is running, stop it
+    if (simulationRunning) {
+        simulationRunning = false;
+        console.log('\n✓ Simulation stopped by user\n');
+        const simBtn = document.getElementById('simulationBtn');
+        if (simBtn) simBtn.textContent = 'Run Simulation (1k games)';
+        return;
+    }
+    
+    simulationRunning = true;
+    const simBtn = document.getElementById('simulationBtn');
+    if (simBtn) simBtn.textContent = 'Stop Simulation';
+    
+    const difficultyName = difficulty ? BOT_DIFFICULTY_CONFIG[difficulty].name : 'Default (Medium)';
     console.log('\n========================================');
-    console.log('  BLOCK RUSH - 100 GAME RTP SIMULATION');
-    console.log('  (With Golden Pot Feature)              ');
+    console.log('  BLOCK RUSH - 1,000 GAME RTP SIMULATION');
+    console.log(`  Difficulty: ${difficultyName}`);
+    console.log(`  Max Blocks Per Game: ${GAME_CONFIG.MAX_BLOCKS_PER_GAME}`);
+    console.log(`  Target RTP: ${(GAME_CONFIG.TARGET_RTP * 100).toFixed(0)}%`);
+    console.log('  (With Golden Pot Feature)');
     console.log('========================================\n');
     
-    const TOTAL_GAMES = 10000;
+    const TOTAL_GAMES = 1000;
     const COST_PER_GAME = 1.00;
     
     let totalWagered = 0;
     let totalWon = 0;
-    let totalGoldenPotTriggered = 0;
-    let totalGoldenWinnings = 0;
     const gameResults = [];
     
-    console.log(`Running ${TOTAL_GAMES} games at $${COST_PER_GAME.toFixed(2)} per game...\n`);
-    console.log('Game# | Wager | Winnings | Lines | Gold | RTP (Game) | Running RTP');
-    console.log('------|-------|----------|-------|------|------------|----------');
+    console.log(`Running ${TOTAL_GAMES} games at $${COST_PER_GAME.toFixed(2)} per game (${difficultyName})...\n`);
+    console.log('Game# | Wager | Winnings | Lines | Blocks | RTP (Game) | Running RTP');
+    console.log('------|-------|----------|-------|--------|------------|----------');
     
     for (let gameNum = 1; gameNum <= TOTAL_GAMES; gameNum++) {
+        if (!simulationRunning) break; // Stop if user clicked stop button
+        
         try {
             const wager = COST_PER_GAME;
             
-            // Simulate the game with golden pot tracking
-            const result = simpleGameSimulation();
+            // Simulate the game with specified difficulty
+            const result = simpleGameSimulation(difficulty);
             const winnings = result.balance;
-            const goldenTriggered = result.goldenPotTriggered ? 'YES' : 'no';
             
             // Track totals
             totalWagered += wager;
             totalWon += winnings;
-            if (result.goldenPotTriggered) {
-                totalGoldenPotTriggered++;
-                totalGoldenWinnings += result.goldenPotBonus;
-            }
             
             // Calculate RTP
             const gameRTP = winnings > 0 ? (winnings / wager) * 100 : 0;
@@ -1329,15 +1397,14 @@ function runRTPSimulation() {
                 wager,
                 winnings,
                 lines: result.linesCleared,
-                goldenTriggered: result.goldenPotTriggered,
-                goldenBonus: result.goldenPotBonus,
+                blocks: result.moves,
                 rtp: gameRTP,
                 runningRTP
             });
             
-            // Log every game
+            // Log every game (includes blocks placed)
             console.log(
-                `${String(gameNum).padStart(5, ' ')} | $${wager.toFixed(2)} | $${winnings.toFixed(4)} | ${String(result.linesCleared).padStart(5, ' ')} | ${goldenTriggered.padEnd(4, ' ')} | ${gameRTP.toFixed(2).padStart(9, ' ')}% | ${runningRTP.toFixed(2)}%`
+                `${String(gameNum).padStart(5, ' ')} | $${wager.toFixed(2)} | $${winnings.toFixed(4)} | ${String(result.linesCleared).padStart(5, ' ')} | ${String(result.moves).padStart(5, ' ')} | ${gameRTP.toFixed(2).padStart(9, ' ')}% | ${runningRTP.toFixed(2)}%`
             );
         } catch (error) {
             console.error(`✗ Error in game ${gameNum}:`, error);
@@ -1349,10 +1416,9 @@ function runRTPSimulation() {
     const finalRTP = totalWagered > 0 ? (totalWon / totalWagered) * 100 : 0;
     const avgWinPerGame = totalWon / TOTAL_GAMES;
     const avgLinesPerGame = gameResults.reduce((sum, g) => sum + g.lines, 0) / TOTAL_GAMES;
+    const avgBlocksPerGame = gameResults.reduce((sum, g) => sum + g.blocks, 0) / TOTAL_GAMES;
     const netProfit = totalWon - totalWagered;
-    const baseWinnings = totalWon - totalGoldenWinnings;
-    const baseRTP = totalWagered > 0 ? (baseWinnings / totalWagered) * 100 : 0;
-    const goldenRTPBoost = finalRTP - baseRTP;
+    const targetRTPPercent = GAME_CONFIG.TARGET_RTP * 100;
     
     // Final summary
     console.log('\n========================================');
@@ -1365,20 +1431,19 @@ function runRTPSimulation() {
     console.log(`  Net Profit/Loss:          $${netProfit.toFixed(2)}`);
     console.log(`  Average Win per Game:     $${avgWinPerGame.toFixed(4)}`);
     console.log(`  Average Lines per Game:   ${avgLinesPerGame.toFixed(2)}`);
+    console.log(`  Average Blocks Placed:    ${avgBlocksPerGame.toFixed(2)} (max: ${GAME_CONFIG.MAX_BLOCKS_PER_GAME})`);
     
     console.log('\nRTP PERFORMANCE:');
     console.log(`  Final RTP:                ${finalRTP.toFixed(2)}%`);
-    console.log(`  Target RTP:               ${(GAME_CONFIG.TARGET_RTP * 100).toFixed(2)}%`);
-    console.log(`  RTP Variance:             ${(finalRTP - (GAME_CONFIG.TARGET_RTP * 100)).toFixed(2)}%`);
-    console.log(`  Base RTP (w/o golden):    ${baseRTP.toFixed(2)}%`);
-    console.log(`  Golden RTP Boost:         +${goldenRTPBoost.toFixed(2)}%`);
-    
-    console.log('\nGOLDEN POT STATS:');
-    console.log(`  Golden Pot Triggered:     ${totalGoldenPotTriggered}x (${((totalGoldenPotTriggered/TOTAL_GAMES)*100).toFixed(1)}% of games)`);
-    console.log(`  Golden Pot Winnings:      $${totalGoldenWinnings.toFixed(2)}`);
-    console.log(`  Avg Golden Bonus:         $${totalGoldenPotTriggered > 0 ? (totalGoldenWinnings/totalGoldenPotTriggered).toFixed(4) : '0.0000'}`);
+    console.log(`  Target RTP:               ${targetRTPPercent.toFixed(2)}%`);
+    console.log(`  RTP Variance:             ${(finalRTP - targetRTPPercent).toFixed(2)}%`);
     
     console.log('\n========================================\n');
+    
+    // Reset simulation state
+    simulationRunning = false;
+    const simBtn2 = document.getElementById('simulationBtn');
+    if (simBtn2) simBtn2.textContent = 'Run Simulation (1k games)';
     
     return {
         totalGames: TOTAL_GAMES,
@@ -1394,8 +1459,8 @@ function runRTPSimulation() {
     };
 }
 
-// Simple, isolated 100-game simulation with golden pot tracking
-function simpleGameSimulation() {
+// Simple, isolated game simulation with golden pot tracking and difficulty
+function simpleGameSimulation(difficulty = null) {
     // Create isolated game state
     const sim = {
         grid: Array(GAME_CONFIG.GRID_SIZE).fill().map(() => Array(GAME_CONFIG.GRID_SIZE).fill(0)),
@@ -1403,24 +1468,19 @@ function simpleGameSimulation() {
         currentMultiplier: 1,
         linesCleared: 0,
         consecutiveClears: 0,
-        potValue: 0, // Golden pot tracker
-        goldenBatchActive: false,
-        goldenBatchBlocksRemaining: 0,
-        goldenBlocks: [],
         blockOptions: [],
-        moves: 0,
-        goldenPotTriggered: false,
-        goldenPotBonus: 0
+        moves: 0
     };
     
     // Generate initial 3 blocks
     generateSimulationBlocks(sim);
     
-    const maxMoves = 1000;
+    // Limit: max 55 blocks (realistic player max between 15s and 5s game speed)
+    const maxMoves = GAME_CONFIG.MAX_BLOCKS_PER_GAME;
     
     // Play game with AI
     while (!isSimulationGameOver(sim) && sim.moves < maxMoves) {
-        const bestMove = findBestSimulationMove(sim);
+        const bestMove = difficulty ? findBestSimulationMoveWithDifficulty(sim, difficulty) : findBestSimulationMove(sim);
         if (!bestMove) break;
         
         // Place block
@@ -1435,31 +1495,6 @@ function simpleGameSimulation() {
             const payout = basePayout * sim.currentMultiplier;
             sim.balance += payout;
             sim.linesCleared += clearedLines;
-            
-            // Golden pot mechanic: accumulate for multi-line clears
-            if (clearedLines > 1) {
-                sim.potValue = Math.min(GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)], sim.potValue + clearedLines);
-                
-                // Pot full? Trigger golden batch
-                if (sim.potValue >= GAME_CONFIG.POT_LIMIT[Math.floor(Math.random()* 3)]) {
-                    sim.goldenBatchActive = true;
-                    sim.goldenBatchBlocksRemaining = 5;
-                    sim.goldenPotTriggered = true;
-                    sim.goldenPotBonus += 0.15; // Golden pot trigger bonus
-                    sim.potValue = 0; // Reset pot
-                }
-            }
-            
-            // Apply golden batch bonus if active
-            if (sim.goldenBatchActive && sim.goldenBatchBlocksRemaining > 0) {
-                const goldenBonus = payout * 0.30; // 30% bonus per golden block placement
-                sim.balance += goldenBonus;
-                sim.goldenPotBonus += goldenBonus;
-                sim.goldenBatchBlocksRemaining -= 1;
-                if (sim.goldenBatchBlocksRemaining <= 0) {
-                    sim.goldenBatchActive = false;
-                }
-            }
         } else {
             sim.consecutiveClears = 0;
             sim.currentMultiplier = 1;
@@ -1480,9 +1515,7 @@ function simpleGameSimulation() {
     return {
         balance: sim.balance,
         linesCleared: sim.linesCleared,
-        moves: sim.moves,
-        goldenPotTriggered: sim.goldenPotTriggered,
-        goldenPotBonus: sim.goldenPotBonus
+        moves: sim.moves
     };
 }
 
@@ -1567,6 +1600,36 @@ function findBestSimulationMove(sim) {
     return bestMove;
 }
 
+// Find best move for simulation with difficulty
+function findBestSimulationMoveWithDifficulty(sim, difficulty) {
+    const config = BOT_DIFFICULTY_CONFIG[difficulty] || BOT_DIFFICULTY_CONFIG.medium;
+    let allMoves = [];
+    
+    for (const block of sim.blockOptions) {
+        if (!block) continue;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+                if (canPlaceSimulationBlock(sim, block.shape, row, col)) {
+                    const score = evaluateSimulationMoveWithDifficulty(sim, block.shape, row, col, config.scoreWeights);
+                    allMoves.push({ block, row, col, score });
+                }
+            }
+        }
+    }
+    
+    if (allMoves.length === 0) return null;
+    
+    // Sort by score
+    allMoves.sort((a, b) => b.score - a.score);
+    
+    // Apply randomness based on difficulty
+    if (Math.random() < config.randomness) {
+        return allMoves[Math.floor(Math.random() * allMoves.length)];
+    }
+    
+    return allMoves[0];
+}
+
 // Evaluate move for simulation
 function evaluateSimulationMove(sim, shape, startRow, startCol) {
     const tempGrid = sim.grid.map(row => [...row]);
@@ -1632,7 +1695,132 @@ function evaluateSimulationMove(sim, shape, startRow, startCol) {
     return score;
 }
 
-// Count completed lines in simulation
+// Evaluate move for simulation with difficulty weights
+function evaluateSimulationMoveWithDifficulty(sim, shape, startRow, startCol, weights) {
+    const tempGrid = sim.grid.map(row => [...row]);
+    const placedCells = [];
+    
+    // Place on temp grid
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                tempGrid[startRow + r][startCol + c] = 1;
+                placedCells.push({ row: startRow + r, col: startCol + c });
+            }
+        }
+    }
+    
+    let score = 0;
+    
+    // Apply weighted scoring based on difficulty - SAME 8 FACTORS AS LIVE BOT
+    const completedLines = countSimulationCompletedLines(tempGrid);
+    score += completedLines * (weights.lineCompletion || 1000);
+    
+    // 1. Near completions
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        const filled = tempGrid[row].filter(c => c === 1).length;
+        if (filled >= 6) score += (filled - 5) * (weights.nearCompletion || 100);
+    }
+    for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+        let filled = 0;
+        for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+            if (tempGrid[row][col] === 1) filled++;
+        }
+        if (filled >= 6) score += (filled - 5) * (weights.nearCompletion || 100);
+    }
+    
+    // 2. Strategic positioning - connect to existing blocks
+    for (const cell of placedCells) {
+        let adjacent = 0;
+        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        for (const [dr, dc] of directions) {
+            const nr = cell.row + dr;
+            const nc = cell.col + dc;
+            if (nr >= 0 && nr < GAME_CONFIG.GRID_SIZE && nc >= 0 && nc < GAME_CONFIG.GRID_SIZE && tempGrid[nr][nc] === 1) {
+                adjacent++;
+            }
+        }
+        score += adjacent * (weights.strategicPositioning || 50);
+    }
+    
+    // 3. Space efficiency - count surrounding empty cells
+    for (const cell of placedCells) {
+        const surroundingEmpty = countSurroundingEmpty(tempGrid, cell.row, cell.col);
+        if (surroundingEmpty <= 2) score += 3 * (weights.spaceEfficiency || 30);
+    }
+    
+    // 4. Future potential - check remaining moves after placement
+    let futureMoves = 0;
+    for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {
+        for (let col = 0; col < GAME_CONFIG.GRID_SIZE; col++) {
+            if (canPlaceSimulationBlockOnGrid(BLOCK_SHAPES.single, row, col, tempGrid)) {
+                futureMoves++;
+            }
+        }
+    }
+    score += Math.min(futureMoves, 10) * (weights.futurePotential || 20);
+    
+    // 5. Edge and corner bonus
+    for (const cell of placedCells) {
+        if ((cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1) && 
+            (cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1)) {
+            score += 2 * (weights.edgeCornerBonus || 15);
+        } else if (cell.row === 0 || cell.row === GAME_CONFIG.GRID_SIZE - 1 || 
+                   cell.col === 0 || cell.col === GAME_CONFIG.GRID_SIZE - 1) {
+            score += 1 * (weights.edgeCornerBonus || 15);
+        }
+    }
+    
+    // 6. Density optimization - fill existing clusters
+    for (const cell of placedCells) {
+        let localDensity = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+                const checkRow = cell.row + dr;
+                const checkCol = cell.col + dc;
+                if (checkRow >= 0 && checkRow < GAME_CONFIG.GRID_SIZE && 
+                    checkCol >= 0 && checkCol < GAME_CONFIG.GRID_SIZE && 
+                    tempGrid[checkRow][checkCol] === 1) {
+                    localDensity++;
+                }
+            }
+        }
+        score += localDensity * (weights.densityOptimization || 25);
+    }
+    
+    // 7. Avoid isolated holes
+    let isolated = 0;
+    for (let row = 1; row < GAME_CONFIG.GRID_SIZE - 1; row++) {
+        for (let col = 1; col < GAME_CONFIG.GRID_SIZE - 1; col++) {
+            if (tempGrid[row][col] === 0) {
+                let surrounded = 0;
+                for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+                    if (tempGrid[row + dr][col + dc] === 1) surrounded++;
+                }
+                if (surrounded >= 3) isolated++;
+            }
+        }
+    }
+    score -= isolated * (Math.abs(weights.isolatedHoles) || 200);
+    
+    return score;
+}
+
+// Helper to check canPlaceSimulationBlock with optional grid parameter
+function canPlaceSimulationBlockOnGrid(shape, startRow, startCol, grid) {
+    for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+            if (shape[r][c] === 1) {
+                const targetRow = startRow + r;
+                const targetCol = startCol + c;
+                if (targetRow < 0 || targetRow >= GAME_CONFIG.GRID_SIZE || targetCol < 0 || targetCol >= GAME_CONFIG.GRID_SIZE || grid[targetRow][targetCol] === 1) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
 function countSimulationCompletedLines(grid) {
     let count = 0;
     for (let row = 0; row < GAME_CONFIG.GRID_SIZE; row++) {

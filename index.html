@@ -57,7 +57,19 @@
                 <div class="game-controls">
                     <button class="new-game-btn" onclick="startNewGame()">New Game ($1.00)</button>
                     <button class="auto-play-btn" onclick="toggleAutoPlay()" id="autoPlayBtn">Auto Play</button>
+                    <div class="bot-difficulty-controls">
+                        <label>Bot Difficulty:</label>
+                        <button class="difficulty-btn easy-btn" onclick="startBotDifficulty('easy')">Easy</button>
+                        <button class="difficulty-btn medium-btn" onclick="startBotDifficulty('medium')">Medium</button>
+                        <button class="difficulty-btn hard-btn" onclick="startBotDifficulty('hard')">Hard</button>
+                    </div>
                     <button class="simulation-btn" onclick="runRTPSimulation()" id="simulationBtn">Run Simulation (1k games)</button>
+                    <div class="simulation-difficulty-controls">
+                        <label>Simulation Difficulty:</label>
+                        <button class="difficulty-btn easy-btn" onclick="runRTPSimulation('easy')">Easy</button>
+                        <button class="difficulty-btn medium-btn" onclick="runRTPSimulation('medium')">Medium</button>
+                        <button class="difficulty-btn hard-btn" onclick="runRTPSimulation('hard')">Hard</button>
+                    </div>
                 </div>
                 
                 <div class="simulation-results" id="simulationResults" style="display: none;">
